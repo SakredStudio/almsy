@@ -21,6 +21,7 @@ const APP_SHELL_ASSETS = [
   './lib/money.js',
   './lib/validate.js',
   './lib/db.js',
+  './lib/org-profile.js',
   './vendor/pdf-lib.esm.js',
   './vendor/fontkit.esm.js',
   './vendor/fflate.esm.js',
