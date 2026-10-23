@@ -89,3 +89,29 @@ test('numbering: allocates sequential numbers, never reuses after void, and pers
   assert.ok(csv.includes('SGT-2026-00002,2,official,VOID'));
   assert.ok(csv.includes('SGT-2026-00003,3,official,ISSUED'));
 });
+
+test('numbering: register entries carry a re-render snapshot and the CSV has a Payment Method column', async () => {
+  const backing = createMemoryBacking();
+  const db = createAlmsyDb({ backing });
+  await db.saveOrgProfile({ ...SAMPLE_OFFICIAL_CHARITY_PROFILE, receiptPrefix: 'SNP-2026-', nextSequence: 1 });
+
+  const model = buildReceiptModel({
+    orgProfile: { ...SAMPLE_OFFICIAL_CHARITY_PROFILE, aggregationMode: 'annual' },
+    item: { ...sampleDonorItem, giftDateOrYear: '2026', giftCount: 2, gifts: [{ isoDate: '2026-01-01', amountCents: 10000 }, { isoDate: '2026-02-01', amountCents: 15000 }] },
+    serialNumber: 'SNP-2026-00001',
+    issueDate: '2026-10-23',
+  });
+  const res = await commitGeneratedRun(db, { receiptModels: [model], runId: 'RUN-SNAP' });
+  const entry = res.registerEntries[0];
+  assert.equal(entry.paymentMethod, 'e-Transfer');
+  assert.equal(entry.receiptSnapshot.giftCount, 2);
+  assert.equal(entry.receiptSnapshot.gifts.length, 2);
+  assert.equal(entry.receiptSnapshot.charityName, SAMPLE_OFFICIAL_CHARITY_PROFILE.legalName);
+  assert.equal(entry.receiptSnapshot.registrationNumber, SAMPLE_OFFICIAL_CHARITY_PROFILE.registrationNumber);
+  assert.equal(entry.receiptSnapshot.authorizedSignerName, SAMPLE_OFFICIAL_CHARITY_PROFILE.authorizedSignerName);
+
+  const csv = exportRegisterCsv(await db.getAllRegisterEntries());
+  const [header, first] = csv.trim().split('\n');
+  assert.ok(header.split(',').includes('Payment Method'));
+  assert.ok(first.includes('e-Transfer'));
+});

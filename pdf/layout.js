@@ -8,7 +8,14 @@
 import { PDFDocument, rgb } from '../vendor/pdf-lib.esm.js';
 import fontkit from '../vendor/fontkit.esm.js';
 import { assertValidReceiptModel } from '../lib/receipt-model.js';
-import { VOID_RECEIPT_BANNER } from '../lib/cra-text.js';
+import {
+  VOID_RECEIPT_BANNER,
+  CRA_INFO_LEAD,
+  AMOUNT_RECEIVED_LABEL,
+  ADVANTAGE_LABEL,
+  ADVANTAGE_NONE_TEXT,
+  ELIGIBLE_AMOUNT_LABEL,
+} from '../lib/cra-text.js';
 
 export const LETTER_WIDTH = 612;
 export const LETTER_HEIGHT = 792;
@@ -167,19 +174,26 @@ export function drawReceiptOnPage(page, model, resources) {
     orgTextX = margin + logoDim + 12;
   }
 
-  page.drawText(model.charityName, {
+  // Right-aligned Serial Number Box (drawn below; its left edge bounds the letterhead text)
+  const serialBoxW = 165;
+  const serialBoxX = LETTER_WIDTH - margin - serialBoxW;
+  const headerMaxW = serialBoxX - 12 - orgTextX;
+
+  const nameFit = fitText(serifBold, model.charityName, 15, headerMaxW, 10);
+  page.drawText(nameFit.text, {
     x: orgTextX,
     y: cursorY,
     font: serifBold,
-    size: 15,
+    size: nameFit.size,
     color: COLORS.ink,
   });
 
-  page.drawText(model.charityAddress, {
+  const addrFit = fitText(sansRegular, model.charityAddress, 9.5, headerMaxW, 7);
+  page.drawText(addrFit.text, {
     x: orgTextX,
     y: cursorY - 16,
     font: sansRegular,
-    size: 9.5,
+    size: addrFit.size,
     color: COLORS.muted,
   });
 
@@ -193,9 +207,6 @@ export function drawReceiptOnPage(page, model, resources) {
     });
   }
 
-  // Right-aligned Serial Number Box
-  const serialBoxW = 165;
-  const serialBoxX = LETTER_WIDTH - margin - serialBoxW;
   page.drawRectangle({
     x: serialBoxX,
     y: cursorY - 34,
@@ -274,18 +285,20 @@ export function drawReceiptOnPage(page, model, resources) {
     });
   }
 
-  cursorY -= 86;
+  cursorY -= 98;
 
   // 3. Two-Column Donor & Gift Amount Boxes
   const colGap = 14;
   const colW = (contentWidth - colGap) / 2;
+  const boxH = 88;
+  const boxInnerW = colW - 24;
 
   // Left Box: Donor Full Name & Address
   page.drawRectangle({
     x: margin,
     y: cursorY,
     width: colW,
-    height: 74,
+    height: boxH,
     color: COLORS.paper,
     borderColor: COLORS.line,
     borderWidth: 1,
@@ -293,68 +306,87 @@ export function drawReceiptOnPage(page, model, resources) {
 
   page.drawText('DONOR FULL NAME & ADDRESS', {
     x: margin + 12,
-    y: cursorY + 56,
+    y: cursorY + 70,
     font: sansBold,
     size: 8,
     color: COLORS.muted,
   });
 
-  page.drawText(model.donorFullName, {
+  const donorFit = fitText(serifBold, model.donorFullName, 12.5, boxInnerW, 9);
+  page.drawText(donorFit.text, {
     x: margin + 12,
-    y: cursorY + 38,
+    y: cursorY + 52,
     font: serifBold,
-    size: 12.5,
+    size: donorFit.size,
     color: COLORS.ink,
   });
 
-  // Wrap donor address if longer than 44 chars
-  const addrLines = wrapText(model.donorAddress, 46);
-  addrLines.slice(0, 2).forEach((line, idx) => {
+  // Wrap donor address by measured width, up to 3 lines
+  const addrLines = wrapTextToWidth(sansRegular, model.donorAddress, 9.5, boxInnerW, 3);
+  addrLines.forEach((line, idx) => {
     page.drawText(line, {
       x: margin + 12,
-      y: cursorY + 21 - idx * 12,
+      y: cursorY + 36 - idx * 12,
       font: sansRegular,
       size: 9.5,
       color: COLORS.ink,
     });
   });
 
-  // Right Box: Eligible Gift Amount
+  // Right Box: Amount received, advantage, eligible amount (CRA items 9–11)
   const rightBoxX = margin + colW + colGap;
   page.drawRectangle({
     x: rightBoxX,
     y: cursorY,
     width: colW,
-    height: 74,
+    height: boxH,
     color: COLORS.paper,
     borderColor: COLORS.line,
     borderWidth: 1,
   });
 
   page.drawText(
-    isOfficial ? 'ELIGIBLE AMOUNT OF GIFT (CAD)' : 'CONTRIBUTION AMOUNT (CAD)',
+    isOfficial ? ELIGIBLE_AMOUNT_LABEL.toUpperCase() + ' (CAD)' : 'CONTRIBUTION AMOUNT (CAD)',
     {
       x: rightBoxX + 12,
-      y: cursorY + 56,
+      y: cursorY + 70,
       font: sansBold,
-      size: 8,
+      size: 7.5,
       color: COLORS.muted,
     }
   );
 
   page.drawText(model.amountFormatted, {
     x: rightBoxX + 12,
-    y: cursorY + 30,
+    y: cursorY + 44,
     font: serifBold,
     size: 20,
     color: isOfficial ? COLORS.blueDark : COLORS.green,
   });
 
-  page.drawText(`Payment Method: ${model.paymentMethod || 'Cash'}`, {
+  if (isOfficial) {
+    const advFit = fitText(
+      sansRegular,
+      `${AMOUNT_RECEIVED_LABEL}: ${model.amountFormatted}   ·   ${ADVANTAGE_LABEL}: ${ADVANTAGE_NONE_TEXT}`,
+      8.5,
+      boxInnerW,
+      7
+    );
+    page.drawText(advFit.text, {
+      x: rightBoxX + 12,
+      y: cursorY + 26,
+      font: sansRegular,
+      size: advFit.size,
+      color: COLORS.ink,
+    });
+  }
+
+  const methodFit = fitText(sansRegular, `Payment Method: ${model.paymentMethod || 'Cash'}`, 9, boxInnerW, 7);
+  page.drawText(methodFit.text, {
     x: rightBoxX + 12,
-    y: cursorY + 12,
+    y: cursorY + 11,
     font: sansRegular,
-    size: 9,
+    size: methodFit.size,
     color: COLORS.muted,
   });
 
@@ -401,11 +433,12 @@ export function drawReceiptOnPage(page, model, resources) {
       size: 7.5,
       color: COLORS.muted,
     });
-    page.drawText(String(b.value || ''), {
+    const valFit = fitText(sansBold, String(b.value || ''), 10, thirdW - 20, 7);
+    page.drawText(valFit.text, {
       x: bx + 10,
       y: cursorY + 15,
       font: sansBold,
-      size: 10,
+      size: valFit.size,
       color: COLORS.ink,
     });
   });
@@ -426,11 +459,18 @@ export function drawReceiptOnPage(page, model, resources) {
       .slice(0, 6)
       .map((g) => `${g.isoDate}: ${g.amountFormatted || ''}`)
       .join('  ·  ');
-    page.drawText(`Consolidated Gifts (${model.gifts.length}): ${summaryStr}`, {
+    const consFit = fitText(
+      sansRegular,
+      `Consolidated Gifts (${model.gifts.length})${model.gifts.length > 6 ? ', first 6 shown' : ''}: ${summaryStr}`,
+      8.5,
+      contentWidth - 20,
+      7
+    );
+    page.drawText(consFit.text, {
       x: margin + 10,
       y: cursorY + 12,
       font: sansRegular,
-      size: 8.5,
+      size: consFit.size,
       color: COLORS.muted,
     });
   }
@@ -438,19 +478,27 @@ export function drawReceiptOnPage(page, model, resources) {
   cursorY -= 85;
 
   // 5. Authorized Signature & CRA Reference Row
+  const sigBlockWidth = 250;
+  const sigBlockX = LETTER_WIDTH - margin - sigBlockWidth;
+  const leftColW = sigBlockX - margin - 16;
+
   if (isOfficial) {
-    page.drawText('TAX REGULATOR INFORMATION', {
-      x: margin,
-      y: cursorY + 38,
-      font: sansBold,
-      size: 7.5,
-      color: COLORS.muted,
+    const leadLines = wrapTextToWidth(sansRegular, CRA_INFO_LEAD, 7.5, leftColW, 2);
+    leadLines.forEach((line, idx) => {
+      page.drawText(line, {
+        x: margin,
+        y: cursorY + 46 - idx * 10,
+        font: sansRegular,
+        size: 7.5,
+        color: COLORS.muted,
+      });
     });
-    page.drawText(model.craNameAndWebsite, {
+    const craFit = fitText(sansBold, model.craNameAndWebsite, 9.5, leftColW, 7.5);
+    page.drawText(craFit.text, {
       x: margin,
       y: cursorY + 22,
       font: sansBold,
-      size: 9.5,
+      size: craFit.size,
       color: COLORS.ink,
     });
   } else {
@@ -461,18 +509,17 @@ export function drawReceiptOnPage(page, model, resources) {
       size: 7.5,
       color: COLORS.amber,
     });
-    page.drawText(model.acknowledgementStatement, {
+    const ackFit = fitText(sansRegular, model.acknowledgementStatement, 9, leftColW, 7);
+    page.drawText(ackFit.text, {
       x: margin,
       y: cursorY + 22,
       font: sansRegular,
-      size: 9,
+      size: ackFit.size,
       color: COLORS.ink,
     });
   }
 
   // Authorized Signer & Signature Image on Right
-  const sigBlockWidth = 200;
-  const sigBlockX = LETTER_WIDTH - margin - sigBlockWidth;
   if (signatureImage) {
     page.drawImage(signatureImage, {
       x: sigBlockX + 10,
@@ -493,11 +540,12 @@ export function drawReceiptOnPage(page, model, resources) {
     ? `${model.authorizedSignerName} · ${model.authorizedSignerTitle}`
     : model.authorizedSignerName;
 
-  page.drawText(`Authorized Signer: ${signerLine}`, {
-    x: sigBlockX,
+  const signerFit = fitText(sansBold, `Authorized Signer: ${signerLine}`, 8.5, sigBlockWidth, 6.5);
+  page.drawText(signerFit.text, {
+    x: LETTER_WIDTH - margin - sansBold.widthOfTextAtSize(signerFit.text, signerFit.size),
     y: cursorY + 4,
     font: sansBold,
-    size: 8.5,
+    size: signerFit.size,
     color: COLORS.ink,
   });
 
@@ -513,7 +561,7 @@ export function drawReceiptOnPage(page, model, resources) {
         color: COLORS.muted,
       });
     }
-    page.drawText('✂ DETACHABLE ORGANIZATION FILE COPY (DUPLICATE STUB)', {
+    page.drawText('CUT HERE — DETACHABLE ORGANIZATION FILE COPY (DUPLICATE STUB)', {
       x: margin,
       y: stubTopY + 5,
       font: sansBold,
@@ -531,60 +579,42 @@ export function drawReceiptOnPage(page, model, resources) {
       borderWidth: 1,
     });
 
-    page.drawText(`${model.charityName} — ORGANIZATION FILE COPY`, {
-      x: margin + 12,
-      y: 180,
-      font: serifBold,
-      size: 11,
-      color: COLORS.ink,
-    });
+    const stubW = contentWidth - 24;
+    const stubLine = (text, y, font, size, color, minSize = 6.5) => {
+      const fit = fitText(font, text, size, stubW, minSize);
+      page.drawText(fit.text, { x: margin + 12, y, font, size: fit.size, color });
+    };
 
-    page.drawText(`Serial No.: ${model.serialNumber}   |   Amount: ${model.amountFormatted}   |   Method: ${model.paymentMethod}`, {
-      x: margin + 12,
-      y: 158,
-      font: sansBold,
-      size: 9.5,
-      color: COLORS.blueDark,
-    });
+    stubLine(`${model.charityName} — ORGANIZATION FILE COPY`, 180, serifBold, 11, COLORS.ink);
 
-    page.drawText(`Donor: ${model.donorFullName} — ${model.donorAddress}`, {
-      x: margin + 12,
-      y: 138,
-      font: sansRegular,
-      size: 9,
-      color: COLORS.ink,
-    });
+    stubLine(
+      `Serial No.: ${model.serialNumber}   |   Amount: ${model.amountFormatted}   |   Method: ${model.paymentMethod}`,
+      158,
+      sansBold,
+      9.5,
+      COLORS.blueDark
+    );
 
-    page.drawText(
+    stubLine(`Donor: ${model.donorFullName} — ${model.donorAddress}`, 138, sansRegular, 9, COLORS.ink);
+
+    stubLine(
       `Gift Date/Year: ${model.giftDateOrYear}   |   Issued: ${model.issueDate} (${model.placeOfIssue})   |   Signer: ${model.authorizedSignerName}`,
-      {
-        x: margin + 12,
-        y: 118,
-        font: sansRegular,
-        size: 8.5,
-        color: COLORS.muted,
-      }
+      118,
+      sansRegular,
+      8.5,
+      COLORS.muted
     );
 
     if (isOfficial) {
-      page.drawText(
+      stubLine(
         `CRA Reg. No.: ${model.registrationNumber} · ${model.officialStatement} · ${model.craNameAndWebsite}`,
-        {
-          x: margin + 12,
-          y: 96,
-          font: sansRegular,
-          size: 8,
-          color: COLORS.muted,
-        }
+        96,
+        sansRegular,
+        8,
+        COLORS.muted
       );
     } else {
-      page.drawText(model.acknowledgementStatement, {
-        x: margin + 12,
-        y: 96,
-        font: sansRegular,
-        size: 8,
-        color: COLORS.amber,
-      });
+      stubLine(model.acknowledgementStatement, 96, sansRegular, 8, COLORS.amber);
     }
   }
 
@@ -605,21 +635,48 @@ export function drawReceiptOnPage(page, model, resources) {
   });
 }
 
-function wrapText(text, maxChars) {
-  const words = String(text || '').split(/\s+/);
+/**
+ * Shrink `text` from `size` down to `minSize` until it fits `maxWidth`; if it still does not fit,
+ * truncate with an ellipsis at `minSize`. Never lets text run outside its box.
+ */
+export function fitText(font, text, size, maxWidth, minSize = 7) {
+  let str = String(text ?? '');
+  let s = size;
+  while (s > minSize && font.widthOfTextAtSize(str, s) > maxWidth) {
+    s = Math.round((s - 0.5) * 10) / 10;
+  }
+  if (font.widthOfTextAtSize(str, s) <= maxWidth) return { text: str, size: s };
+  const ell = '…';
+  while (str.length > 1 && font.widthOfTextAtSize(str + ell, s) > maxWidth) {
+    str = str.slice(0, -1).trimEnd();
+  }
+  return { text: str + ell, size: s };
+}
+
+/**
+ * Word-wrap `text` by measured width into at most `maxLines` lines; the last line is
+ * ellipsised if content remains.
+ */
+export function wrapTextToWidth(font, text, size, maxWidth, maxLines = 2) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
   const lines = [];
   let current = '';
   for (const w of words) {
-    if (!current) {
-      current = w;
-    } else if (current.length + 1 + w.length <= maxChars) {
-      current += ` ${w}`;
+    const candidate = current ? `${current} ${w}` : w;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth || !current) {
+      current = candidate;
     } else {
       lines.push(current);
       current = w;
     }
   }
   if (current) lines.push(current);
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    const rest = lines.slice(maxLines - 1).join(' ');
+    kept[maxLines - 1] = fitText(font, rest, size, maxWidth, size).text;
+    return kept;
+  }
   return lines.length ? lines : [''];
 }
 

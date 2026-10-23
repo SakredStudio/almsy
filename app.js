@@ -52,6 +52,7 @@ const state = {
   // Generate & Register state
   isGenerating: false,
   lastRunResult: null,
+  lastIssuedSignature: null,
   generateFeedback: null,
   registerEntries: [],
 };
@@ -62,6 +63,16 @@ function escapeHtml(val) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function buildRowsSignature(rows, mode) {
+  return (
+    String(mode || 'per-gift') +
+    '|' +
+    (rows || [])
+      .map((r) => [r.id, r.fullName, r.date, r.amount, r.forceManualReview ? 'M' : ''].join('~'))
+      .join('\n')
+  );
 }
 
 function triggerDownload(bytesOrText, fileName, mimeType) {
@@ -1438,10 +1449,18 @@ function renderGenerateScreen(root) {
     taxYear,
   });
 
+  const needsMergeConfirm = aggPlan.requiresMergeConfirmation && !state.annualMergeConfirmed;
+  // Guard against issuing the same gifts twice: the exact row set that produced the last run
+  // cannot be generated again until the rows change or a new file is imported.
+  const rowsSignature = buildRowsSignature(state.mappedRows, p?.aggregationMode);
+  const alreadyIssued =
+    Boolean(state.lastRunResult) && state.lastIssuedSignature === rowsSignature;
   const canGenerate =
     profileCheck.ok &&
     valResult.counts.errors === 0 &&
     aggPlan.receiptItems.length > 0 &&
+    !needsMergeConfirm &&
+    !alreadyIssued &&
     !state.isGenerating;
 
   const startSeq = Math.max(Number(p.nextSequence) || 1, state.highestSequence + 1);
@@ -1488,6 +1507,29 @@ function renderGenerateScreen(root) {
               <div style="margin-top:8px;">
                 <button type="button" class="btn" id="btn-fix-profile">← Complete Organization Profile</button>
               </div>
+            </div>`
+          : ''
+      }
+      ${
+        valResult.counts.errors > 0
+          ? `<div class="callout callout-warn">
+              <strong>${valResult.counts.errors} row(s) still have validation errors.</strong> Go back to Step 3 and fix them before generating.
+            </div>`
+          : ''
+      }
+      ${
+        needsMergeConfirm
+          ? `<div class="callout callout-warn">
+              <strong>Annual mode:</strong> ${aggPlan.mergeGroups.length} donor merge group(s) must be confirmed in Step 3 before generating.
+            </div>`
+          : ''
+      }
+      ${
+        alreadyIssued
+          ? `<div class="callout callout-success">
+              <strong>These ${aggPlan.receiptItems.length} receipts were already issued</strong> in run ${escapeHtml(
+                state.lastRunResult.runId
+              )}. Download them below. To issue more receipts, import a new spreadsheet in Step 2; to re-print one, use the PDF button in the register.
             </div>`
           : ''
       }
@@ -1668,6 +1710,7 @@ function wireGenerateEvents(root) {
       });
 
       state.lastRunResult = runResult;
+      state.lastIssuedSignature = buildRowsSignature(state.mappedRows, state.orgProfile?.aggregationMode);
       state.isGenerating = false;
       await refreshRegisterState();
       state.generateFeedback = {
@@ -1729,16 +1772,34 @@ function wireGenerateEvents(root) {
       const entry = state.registerEntries.find((e) => e.serialNumber === serial);
       if (!entry) return;
       try {
+        // Re-render from the register snapshot taken at issue time (org name/address/reg no.,
+        // signer, payment method, consolidated gifts) so a later profile edit cannot alter
+        // what an already-issued receipt says. Logo/signature images come from the current profile.
+        const snap = entry.receiptSnapshot || {};
         const model = buildReceiptModel({
           orgProfile: {
             ...state.orgProfile,
             receiptType: entry.receiptType,
+            legalName: snap.charityName || state.orgProfile.legalName,
+            address: snap.charityAddress || state.orgProfile.address,
+            registrationNumber:
+              entry.receiptType === 'official'
+                ? snap.registrationNumber || state.orgProfile.registrationNumber
+                : '',
+            placeOfIssue: entry.placeOfIssue || state.orgProfile.placeOfIssue,
+            authorizedSignerName: snap.authorizedSignerName || state.orgProfile.authorizedSignerName,
+            authorizedSignerTitle: snap.authorizedSignerTitle ?? state.orgProfile.authorizedSignerTitle,
+            aggregationMode: snap.aggregationMode || 'per-gift',
+            includeDuplicateStub: snap.includeDuplicateStub ?? state.orgProfile.includeDuplicateStub,
           },
           item: {
             donorFullName: entry.donorName,
             donorAddress: entry.donorAddress,
             amountCents: entry.amountCents,
             giftDateOrYear: entry.giftDateOrYear,
+            method: entry.paymentMethod || 'Cash',
+            giftCount: snap.giftCount || 1,
+            gifts: snap.gifts || [],
             status: entry.status,
           },
           serialNumber: entry.serialNumber,
@@ -1760,6 +1821,10 @@ function wireGenerateEvents(root) {
   root.querySelectorAll('[data-void-serial]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const serial = btn.dataset.voidSerial;
+      const ok = window.confirm(
+        `Mark receipt ${serial} as VOID?\n\nThis is permanent: the receipt stays in the register as VOID and its serial number is never reused. Issue a new receipt if the donor needs a corrected one.`
+      );
+      if (!ok) return;
       await voidReceipt(db, serial, 'Voided in register by treasurer');
       await refreshRegisterState();
       state.generateFeedback = {

@@ -162,3 +162,28 @@ test('validate: parseGiftDate parses ISO, named months, and Excel serial dates',
   assert.deepEqual(parseGiftDate('15 October 2026'), { ok: true, isoDate: '2026-10-15', year: 2026 });
   assert.equal(parseGiftDate('2026-02-30').ok, false);
 });
+
+test('validate: ambiguous slash dates are errors unless the column proves the order', async () => {
+  const { inferSlashDateOrder } = await import('../lib/validate.js');
+  // Alone, 03/04/2026 is ambiguous -> error, never a guess
+  assert.equal(parseGiftDate('03/04/2026').ok, false);
+  assert.match(parseGiftDate('03/04/2026').error, /Ambiguous/);
+  // Unambiguous values still parse without hints
+  assert.deepEqual(parseGiftDate('25/03/2026'), { ok: true, isoDate: '2026-03-25', year: 2026 });
+  assert.deepEqual(parseGiftDate('03/25/2026'), { ok: true, isoDate: '2026-03-25', year: 2026 });
+  // Column inference
+  assert.equal(inferSlashDateOrder(['03/04/2026', '25/03/2026']), 'DMY');
+  assert.equal(inferSlashDateOrder(['03/04/2026', '03/25/2026']), 'MDY');
+  assert.equal(inferSlashDateOrder(['03/04/2026', '05/06/2026']), null);
+  assert.equal(inferSlashDateOrder(['25/03/2026', '03/25/2026']), null);
+  assert.deepEqual(parseGiftDate('03/04/2026', { slashOrder: 'DMY' }), { ok: true, isoDate: '2026-04-03', year: 2026 });
+  assert.deepEqual(parseGiftDate('03/04/2026', { slashOrder: 'MDY' }), { ok: true, isoDate: '2026-03-04', year: 2026 });
+  // validateRows applies the inference across the batch
+  const base = { fullName: 'Asha K. Rao', addressLine1: '1 Main St', city: 'Toronto', province: 'ON', postalCode: 'M5V 2T6', amount: '$10.00' };
+  const withProof = validateRows([{ ...base, date: '03/04/2026' }, { ...base, date: '25/03/2026', amount: '$20.00' }], { taxYear: 2026 });
+  assert.equal(withProof.counts.errors, 0);
+  assert.equal(withProof.rows[0].isoDate, '2026-04-03');
+  const noProof = validateRows([{ ...base, date: '03/04/2026' }], { taxYear: 2026 });
+  assert.equal(noProof.counts.errors, 1);
+  assert.match(noProof.rows[0].errors[0], /Ambiguous/);
+});
