@@ -91,10 +91,10 @@ function decodeDataUrlToBytes(dataUrl) {
 async function embedDocResources(pdfDoc, sampleModel, fontBytes) {
   pdfDoc.registerFontkit(fontkit);
   const [serifRegular, serifBold, sansRegular, sansBold] = await Promise.all([
-    pdfDoc.embedFont(fontBytes.serifRegular, { subset: false }),
-    pdfDoc.embedFont(fontBytes.serifBold, { subset: false }),
-    pdfDoc.embedFont(fontBytes.sansRegular, { subset: false }),
-    pdfDoc.embedFont(fontBytes.sansBold, { subset: false }),
+    pdfDoc.embedFont(fontBytes.serifRegular, { subset: true }),
+    pdfDoc.embedFont(fontBytes.serifBold, { subset: true }),
+    pdfDoc.embedFont(fontBytes.sansRegular, { subset: true }),
+    pdfDoc.embedFont(fontBytes.sansBold, { subset: true }),
   ]);
 
   let logoImage = null;
@@ -675,13 +675,14 @@ export async function renderReceiptBatchPdfs(models = [], options = {}) {
   }
 
   const combinedPdfBytes = await combinedDoc.save();
+  const loadedCombined = await PDFDocument.load(combinedPdfBytes);
 
-  // Extract each page into its own standalone PDF document
+  // Extract each page into its own standalone PDF document (using pre-compressed streams from loadedCombined)
   const individualPdfs = [];
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     const singleDoc = await PDFDocument.create();
-    const [copiedPage] = await singleDoc.copyPages(combinedDoc, [i]);
+    const [copiedPage] = await singleDoc.copyPages(loadedCombined, [i]);
     singleDoc.addPage(copiedPage);
     const bytes = await singleDoc.save();
     const safeDonor = model.donorFullName

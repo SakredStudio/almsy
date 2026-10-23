@@ -25,6 +25,10 @@ import {
 } from './lib/mapping.js';
 import { validateRows } from './lib/validate.js';
 import { buildAggregationPlan } from './lib/aggregate.js';
+import { formatSerial, voidReceipt, exportRegisterCsv } from './lib/numbering.js';
+import { buildReceiptModel } from './lib/receipt-model.js';
+import { renderSingleReceiptPdf } from './pdf/layout.js';
+import { executeGenerationRun } from './lib/generate-run.js';
 
 const db = createAlmsyDb();
 
@@ -43,8 +47,13 @@ const state = {
   importFeedback: null,
   sessionSavedAt: null,
   // Validate & Review state
-  validationFilter: 'all', // 'all' | 'error' | 'valid' | 'manual_review'
+  validationFilter: 'all',
   annualMergeConfirmed: false,
+  // Generate & Register state
+  isGenerating: false,
+  lastRunResult: null,
+  generateFeedback: null,
+  registerEntries: [],
 };
 
 function escapeHtml(val) {
@@ -55,6 +64,25 @@ function escapeHtml(val) {
     .replace(/"/g, '&quot;');
 }
 
+function triggerDownload(bytesOrText, fileName, mimeType) {
+  const blob =
+    bytesOrText instanceof Uint8Array
+      ? new Blob([bytesOrText], { type: mimeType })
+      : new Blob([String(bytesOrText)], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function refreshRegisterState() {
+  state.orgProfile = await db.getOrgProfile();
+  state.highestSequence = await db.getHighestSequence(state.orgProfile.receiptPrefix);
+  state.registerEntries = await db.getAllRegisterEntries();
+}
+
 async function init() {
   const footerDisclaimer = document.getElementById('footer-disclaimer');
   if (footerDisclaimer) footerDisclaimer.textContent = ALMSY_DISCLAIMER_FOOTER;
@@ -62,8 +90,7 @@ async function init() {
   const sessionNotice = document.getElementById('footer-session-notice');
   if (sessionNotice) sessionNotice.textContent = PRIVACY_SESSION_NOTICE;
 
-  state.orgProfile = await db.getOrgProfile();
-  state.highestSequence = await db.getHighestSequence(state.orgProfile.receiptPrefix);
+  await refreshRegisterState();
   state.savedMappings = await db.getSavedMappings();
 
   const savedSession = await db.getSavedDonorSession();
@@ -78,10 +105,13 @@ async function init() {
 
   const nav = document.getElementById('step-nav');
   if (nav) {
-    nav.addEventListener('click', (e) => {
+    nav.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-step]');
       if (!btn) return;
       state.step = btn.dataset.step;
+      if (state.step === 'generate' || state.step === 'profile') {
+        await refreshRegisterState();
+      }
       render();
     });
   }
@@ -117,19 +147,10 @@ function render() {
     return;
   }
 
-  root.innerHTML = `
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2>Step: ${escapeHtml(state.step.toUpperCase())}</h2>
-          <p class="card-subtitle">Active Organization: ${escapeHtml(
-            state.orgProfile?.legalName || '(Not configured yet)'
-          )} · Rows in memory: ${state.mappedRows.length}</p>
-        </div>
-      </div>
-      <div class="callout">${escapeHtml(PRIVACY_SESSION_NOTICE)}</div>
-    </div>
-  `;
+  if (state.step === 'generate') {
+    renderGenerateScreen(root);
+    return;
+  }
 }
 
 /* ============================================================================
@@ -183,7 +204,7 @@ function renderProfileScreen(root) {
                   ${!isOfficial ? '<span class="badge badge-valid">Selected</span>' : ''}
                 </div>
                 <div class="mode-card-desc">
-                  For clubs, unregistered temples, and community groups. Clearly states it is <strong>not</strong> an official receipt for income tax purposes.
+                  For clubs, unregistered temples, and community groups. Clearly states it is <strong>not</strong> a tax receipt for income tax purposes.
                 </div>
               </button>
             </div>
@@ -415,7 +436,7 @@ function renderProfileScreen(root) {
                     ? `<div class="rp-label">Tax Regulator Reference</div>
                        <div class="rp-val" style="font-size:12px;">${escapeHtml(CRA_NAME_AND_WEBSITE)}</div>`
                     : `<div class="rp-label">Non-Tax Notice</div>
-                       <div class="rp-val" style="font-size:12px; color:var(--amber);">Not an official receipt for income tax purposes.</div>`
+                       <div class="rp-val" style="font-size:12px; color:var(--amber);">Not a tax receipt for income tax purposes.</div>`
                 }
               </div>
               <div style="text-align:right;">
@@ -588,13 +609,11 @@ function wireProfileEvents(root) {
     btnExport.addEventListener('click', () => {
       state.orgProfile = readProfileInputsFromDom(root);
       const jsonStr = exportOrgProfileJson(state.orgProfile);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `almsy-org-profile-${state.orgProfile.taxYear || 2026}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerDownload(
+        jsonStr,
+        `almsy-org-profile-${state.orgProfile.taxYear || 2026}.json`,
+        'application/json'
+      );
     });
   }
 
@@ -848,6 +867,7 @@ async function ingestParsedSheet(fileName, headers, rows) {
   }
   state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
   state.annualMergeConfirmed = false;
+  state.lastRunResult = null;
   state.importFeedback = {
     type: 'success',
     message: `Loaded "${fileName}" (${rows.length} donor rows) and auto-mapped columns.`,
@@ -986,7 +1006,7 @@ function wireImportEvents(root) {
 }
 
 /* ============================================================================
- * STEP 3: VALIDATE & REVIEW SCREEN (INLINE FIXES + MANUAL REVIEW + ANNUAL MERGE)
+ * STEP 3: VALIDATE & REVIEW SCREEN
  * ========================================================================== */
 function renderValidateScreen(root) {
   if (!state.mappedRows || state.mappedRows.length === 0) {
@@ -1301,7 +1321,6 @@ function wireValidateEvents(root, manualReviewRows) {
     });
   });
 
-  // Inline edits update state.mappedRows and re-validate on change
   root.querySelectorAll('[data-edit-id]').forEach((inp) => {
     inp.addEventListener('change', () => {
       const rowId = inp.dataset.editId;
@@ -1322,20 +1341,17 @@ function wireValidateEvents(root, manualReviewRows) {
     renderValidateScreen(root);
   });
 
-  // Confirm duplicate gift
   root.querySelectorAll('[data-confirm-dup]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const rowId = btn.dataset.confirmDup;
       const target = state.mappedRows.find((r) => r.id === rowId);
       if (target) {
-        // Confirm all rows sharing the same donor/date/amount or this specific row
         target.duplicateConfirmed = true;
       }
       renderValidateScreen(root);
     });
   });
 
-  // Move row to Manual Review
   root.querySelectorAll('[data-move-manual]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const rowId = btn.dataset.moveManual;
@@ -1345,7 +1361,6 @@ function wireValidateEvents(root, manualReviewRows) {
     });
   });
 
-  // Restore row from Manual Review as Cash gift
   root.querySelectorAll('[data-restore-manual]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const rowId = btn.dataset.restoreManual;
@@ -1361,7 +1376,6 @@ function wireValidateEvents(root, manualReviewRows) {
     });
   });
 
-  // Remove row
   root.querySelectorAll('[data-delete-row]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const rowId = btn.dataset.deleteRow;
@@ -1370,7 +1384,6 @@ function wireValidateEvents(root, manualReviewRows) {
     });
   });
 
-  // Export Manual Review CSV
   root.querySelector('#btn-export-manual-csv')?.addEventListener('click', () => {
     const headers = ['Row', 'Donor Full Name', 'Address', 'Postal Code', 'Date', 'Amount', 'Method', 'Manual Review Reasons'];
     const lines = [
@@ -1388,16 +1401,13 @@ function wireValidateEvents(root, manualReviewRows) {
         ].join(',')
       ),
     ];
-    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `almsy-manual-review-${state.orgProfile?.taxYear || 2026}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(
+      lines.join('\n') + '\n',
+      `almsy-manual-review-${state.orgProfile?.taxYear || 2026}.csv`,
+      'text/csv;charset=utf-8'
+    );
   });
 
-  // Annual merge confirmation checkbox
   root.querySelector('#chk-confirm-annual-merge')?.addEventListener('change', (e) => {
     state.annualMergeConfirmed = e.target.checked;
     renderValidateScreen(root);
@@ -1408,9 +1418,356 @@ function wireValidateEvents(root, manualReviewRows) {
     render();
   });
 
-  root.querySelector('#btn-proceed-generate')?.addEventListener('click', () => {
+  root.querySelector('#btn-proceed-generate')?.addEventListener('click', async () => {
+    await refreshRegisterState();
     state.step = 'generate';
     render();
+  });
+}
+
+/* ============================================================================
+ * STEP 4: GENERATE RUN (ZIP + COMBINED PDF + REGISTER CSV) & VOID ACTION
+ * ========================================================================== */
+function renderGenerateScreen(root) {
+  const p = state.orgProfile;
+  const profileCheck = validateOrgProfile(p);
+  const taxYear = p?.taxYear || 2026;
+  const valResult = validateRows(state.mappedRows || [], { taxYear });
+  const aggPlan = buildAggregationPlan(valResult.validRows, {
+    mode: p?.aggregationMode || 'per-gift',
+    taxYear,
+  });
+
+  const canGenerate =
+    profileCheck.ok &&
+    valResult.counts.errors === 0 &&
+    aggPlan.receiptItems.length > 0 &&
+    !state.isGenerating;
+
+  const startSeq = Math.max(Number(p.nextSequence) || 1, state.highestSequence + 1);
+  const firstSerialPreview = formatSerial(p.receiptPrefix || 'ALM-2026-', startSeq, p.sequencePadding || 5);
+  const lastSerialPreview =
+    aggPlan.receiptItems.length > 0
+      ? formatSerial(
+          p.receiptPrefix || 'ALM-2026-',
+          startSeq + aggPlan.receiptItems.length - 1,
+          p.sequencePadding || 5
+        )
+      : firstSerialPreview;
+
+  const sortedRegister = [...(state.registerEntries || [])].sort(
+    (a, b) => (b.sequenceNumber || 0) - (a.sequenceNumber || 0)
+  );
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>4. Generate Numbered Receipts &amp; Permanent Register</h2>
+          <p class="card-subtitle">
+            Generates Letter PDFs on your letterhead, increments your sequential receipt counter in IndexedDB, and packages a single ZIP + combined file-copy PDF + register CSV.
+          </p>
+        </div>
+        <span class="badge ${p.receiptType === 'official' ? 'badge-blue' : 'badge-valid'}">
+          ${p.receiptType === 'official' ? 'Official Tax Receipt Mode' : 'Thank-You Acknowledgement Mode'}
+        </span>
+      </div>
+
+      ${
+        state.generateFeedback
+          ? `<div class="callout ${
+              state.generateFeedback.type === 'error' ? 'callout-warn' : 'callout-success'
+            }">${escapeHtml(state.generateFeedback.message)}</div>`
+          : ''
+      }
+
+      ${
+        !profileCheck.ok
+          ? `<div class="callout callout-warn">
+              <strong>Organization Profile Incomplete:</strong> ${escapeHtml(profileCheck.errors.join(' · '))}
+              <div style="margin-top:8px;">
+                <button type="button" class="btn" id="btn-fix-profile">← Complete Organization Profile</button>
+              </div>
+            </div>`
+          : ''
+      }
+
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <div class="kpi-num">${aggPlan.receiptItems.length}</div>
+          <div class="kpi-lbl">Receipts Ready to Issue (${escapeHtml(aggPlan.mode)})</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-num" style="color:var(--blue-d);">${formatMoney(aggPlan.totalAmountCents)}</div>
+          <div class="kpi-lbl">Total Eligible Amount (CAD)</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-num" style="font-size:18px; font-family:var(--font-mono);">
+            ${escapeHtml(firstSerialPreview)} → ${escapeHtml(lastSerialPreview)}
+          </div>
+          <div class="kpi-lbl">Next Serial Range (Never Reused)</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-num">${sortedRegister.length}</div>
+          <div class="kpi-lbl">Total Receipts in Local Register</div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; margin-top:16px;">
+        <button type="button" class="btn" id="btn-back-validate">← Back to Validate &amp; Review</button>
+        <button type="button" class="btn btn-primary" id="btn-run-generate" ${canGenerate ? '' : 'disabled'}>
+          ${
+            state.isGenerating
+              ? 'Generating PDFs & Packaging ZIP…'
+              : `Generate ${aggPlan.receiptItems.length} Numbered PDFs + ZIP + Register`
+          }
+        </button>
+      </div>
+    </div>
+
+    ${
+      state.lastRunResult
+        ? `<div class="card" style="border-left:5px solid var(--green);" id="run-complete-card">
+            <div class="card-header">
+              <div>
+                <h3>✓ Generation Run Complete (${escapeHtml(state.lastRunResult.runId)})</h3>
+                <p class="card-subtitle">
+                  Generated <strong>${state.lastRunResult.receiptCount}</strong> numbered PDFs + combined file copy + register in <strong>${(
+                    state.lastRunResult.elapsedMs / 1000
+                  ).toFixed(2)} s</strong> on-device. Next sequence number is now <strong>${
+                    state.lastRunResult.nextSequenceAfter
+                  }</strong>.
+                </p>
+              </div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <button type="button" class="btn btn-success" id="btn-dl-zip">
+                  ⬇ Download All Receipts (.zip)
+                </button>
+                <button type="button" class="btn btn-primary" id="btn-dl-combined-pdf">
+                  ⬇ Download All as One Combined PDF (File Copy)
+                </button>
+                <button type="button" class="btn" id="btn-dl-run-csv">
+                  ⬇ Download Register (.csv)
+                </button>
+              </div>
+            </div>
+          </div>`
+        : ''
+    }
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h3>Permanent Receipt Register (${sortedRegister.length} record${sortedRegister.length === 1 ? '' : 's'})</h3>
+          <p class="card-subtitle">
+            Stored in local IndexedDB. Serial numbers are never reused or decremented. Marking a receipt <strong>VOID</strong> keeps it in the register for your CRA audit trail.
+          </p>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${
+            sortedRegister.length > 0
+              ? `<button type="button" class="btn" id="btn-export-full-register">⬇ Download Register CSV (${sortedRegister.length})</button>`
+              : ''
+          }
+        </div>
+      </div>
+
+      ${
+        sortedRegister.length === 0
+          ? `<div class="callout">No receipts have been generated yet. Run a batch above to populate your register.</div>`
+          : `<div class="table-scroll">
+              <table class="data-table" id="register-table">
+                <thead>
+                  <tr>
+                    <th>Serial Number</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Donor Full Name</th>
+                    <th>Donor Address</th>
+                    <th>Amount (CAD)</th>
+                    <th>Gift Date / Year</th>
+                    <th>Issued</th>
+                    <th>Run ID</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${sortedRegister
+                    .map(
+                      (entry) => `
+                        <tr data-serial="${escapeHtml(entry.serialNumber)}">
+                          <td><code style="font-weight:700;">${escapeHtml(entry.serialNumber)}</code></td>
+                          <td>
+                            <span class="badge ${entry.receiptType === 'official' ? 'badge-blue' : 'badge-valid'}">
+                              ${escapeHtml(entry.receiptType)}
+                            </span>
+                          </td>
+                          <td>
+                            ${
+                              entry.status === 'VOID'
+                                ? `<span class="badge badge-error" title="${escapeHtml(entry.voidReason || '')}">VOID</span>`
+                                : `<span class="badge badge-valid">ISSUED</span>`
+                            }
+                          </td>
+                          <td><strong>${escapeHtml(entry.donorName)}</strong></td>
+                          <td>${escapeHtml(entry.donorAddress)}</td>
+                          <td><strong>${escapeHtml(entry.amountFormatted || formatMoney(entry.amountCents))}</strong></td>
+                          <td>${escapeHtml(entry.giftDateOrYear)}</td>
+                          <td>${escapeHtml(entry.issueDate)}</td>
+                          <td><small>${escapeHtml(entry.runId)}</small></td>
+                          <td style="white-space:nowrap;">
+                            <button type="button" class="btn" style="padding:4px 8px; min-height:30px; font-size:11.5px;"
+                              data-dl-single="${escapeHtml(entry.serialNumber)}">
+                              PDF
+                            </button>
+                            ${
+                              entry.status !== 'VOID'
+                                ? `<button type="button" class="btn btn-danger" style="padding:4px 8px; min-height:30px; font-size:11.5px;"
+                                    data-void-serial="${escapeHtml(entry.serialNumber)}">
+                                    Void
+                                  </button>`
+                                : `<small style="color:var(--red); margin-left:6px;">${escapeHtml(
+                                    entry.voidReason || 'Voided'
+                                  )}</small>`
+                            }
+                          </td>
+                        </tr>
+                      `
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>`
+      }
+    </div>
+  `;
+
+  wireGenerateEvents(root);
+}
+
+function wireGenerateEvents(root) {
+  root.querySelector('#btn-fix-profile')?.addEventListener('click', () => {
+    state.step = 'profile';
+    render();
+  });
+
+  root.querySelector('#btn-back-validate')?.addEventListener('click', () => {
+    state.step = 'validate';
+    render();
+  });
+
+  root.querySelector('#btn-run-generate')?.addEventListener('click', async () => {
+    try {
+      state.isGenerating = true;
+      state.generateFeedback = null;
+      renderGenerateScreen(root);
+
+      const runResult = await executeGenerationRun({
+        db,
+        rows: state.mappedRows,
+      });
+
+      state.lastRunResult = runResult;
+      state.isGenerating = false;
+      await refreshRegisterState();
+      state.generateFeedback = {
+        type: 'success',
+        message: `Generated ${runResult.receiptCount} receipts (${runResult.assignedReceipts[0].serialNumber} to ${
+          runResult.assignedReceipts[runResult.assignedReceipts.length - 1].serialNumber
+        }) in ${(runResult.elapsedMs / 1000).toFixed(2)}s.`,
+      };
+    } catch (err) {
+      state.isGenerating = false;
+      state.generateFeedback = {
+        type: 'error',
+        message: `Generation failed: ${err.message}`,
+      };
+    }
+    renderGenerateScreen(root);
+  });
+
+  root.querySelector('#btn-dl-zip')?.addEventListener('click', () => {
+    if (!state.lastRunResult) return;
+    triggerDownload(
+      state.lastRunResult.zipBytes,
+      `Almsy_Receipts_${state.lastRunResult.runId}.zip`,
+      'application/zip'
+    );
+  });
+
+  root.querySelector('#btn-dl-combined-pdf')?.addEventListener('click', () => {
+    if (!state.lastRunResult) return;
+    triggerDownload(
+      state.lastRunResult.combinedPdfBytes,
+      `FILE_COPY_Combined_${state.lastRunResult.runId}.pdf`,
+      'application/pdf'
+    );
+  });
+
+  root.querySelector('#btn-dl-run-csv')?.addEventListener('click', () => {
+    if (!state.lastRunResult) return;
+    triggerDownload(
+      state.lastRunResult.registerCsvText,
+      `Receipt_Register_${state.orgProfile?.taxYear || 2026}.csv`,
+      'text/csv;charset=utf-8'
+    );
+  });
+
+  root.querySelector('#btn-export-full-register')?.addEventListener('click', () => {
+    const csv = exportRegisterCsv(state.registerEntries);
+    triggerDownload(
+      csv,
+      `Receipt_Register_${state.orgProfile?.taxYear || 2026}.csv`,
+      'text/csv;charset=utf-8'
+    );
+  });
+
+  // Download individual receipt PDF from register (renders with VOID banner if status === 'VOID')
+  root.querySelectorAll('[data-dl-single]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const serial = btn.dataset.dlSingle;
+      const entry = state.registerEntries.find((e) => e.serialNumber === serial);
+      if (!entry) return;
+      try {
+        const model = buildReceiptModel({
+          orgProfile: {
+            ...state.orgProfile,
+            receiptType: entry.receiptType,
+          },
+          item: {
+            donorFullName: entry.donorName,
+            donorAddress: entry.donorAddress,
+            amountCents: entry.amountCents,
+            giftDateOrYear: entry.giftDateOrYear,
+            status: entry.status,
+          },
+          serialNumber: entry.serialNumber,
+          issueDate: entry.issueDate,
+        });
+        const pdfBytes = await renderSingleReceiptPdf(model);
+        triggerDownload(pdfBytes, `${entry.serialNumber}.pdf`, 'application/pdf');
+      } catch (err) {
+        state.generateFeedback = {
+          type: 'error',
+          message: `Failed to render PDF for ${serial}: ${err.message}`,
+        };
+        renderGenerateScreen(root);
+      }
+    });
+  });
+
+  // Void receipt in register (never reuses or decrements serial number)
+  root.querySelectorAll('[data-void-serial]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const serial = btn.dataset.voidSerial;
+      await voidReceipt(db, serial, 'Voided in register by treasurer');
+      await refreshRegisterState();
+      state.generateFeedback = {
+        type: 'success',
+        message: `Receipt ${serial} marked VOID in permanent register. Serial number ${serial} is permanently retired and will never be reused.`,
+      };
+      renderGenerateScreen(root);
+    });
   });
 }
 
