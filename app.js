@@ -24,6 +24,7 @@ import {
   applyColumnMapping,
 } from './lib/mapping.js';
 import { validateRows } from './lib/validate.js';
+import { buildAggregationPlan } from './lib/aggregate.js';
 
 const db = createAlmsyDb();
 
@@ -32,7 +33,7 @@ const state = {
   orgProfile: null,
   highestSequence: 0,
   profileFeedback: null,
-  // Import & Mapping state (in-memory for session unless user clicks "Save this session")
+  // Import & Mapping state
   fileName: '',
   rawHeaders: [],
   rawRows: [],
@@ -41,6 +42,9 @@ const state = {
   mappedRows: [],
   importFeedback: null,
   sessionSavedAt: null,
+  // Validate & Review state
+  validationFilter: 'all', // 'all' | 'error' | 'valid' | 'manual_review'
+  annualMergeConfirmed: false,
 };
 
 function escapeHtml(val) {
@@ -62,7 +66,6 @@ async function init() {
   state.highestSequence = await db.getHighestSequence(state.orgProfile.receiptPrefix);
   state.savedMappings = await db.getSavedMappings();
 
-  // Check if user previously clicked "Save this session"
   const savedSession = await db.getSavedDonorSession();
   if (savedSession && Array.isArray(savedSession.mappedRows) && savedSession.mappedRows.length > 0) {
     state.fileName = savedSession.fileName || 'Saved Session';
@@ -106,6 +109,11 @@ function render() {
 
   if (state.step === 'import') {
     renderImportScreen(root);
+    return;
+  }
+
+  if (state.step === 'validate') {
+    renderValidateScreen(root);
     return;
   }
 
@@ -839,6 +847,7 @@ async function ingestParsedSheet(fileName, headers, rows) {
     state.columnMapping = autoGuessMapping(headers);
   }
   state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
+  state.annualMergeConfirmed = false;
   state.importFeedback = {
     type: 'success',
     message: `Loaded "${fileName}" (${rows.length} donor rows) and auto-mapped columns.`,
@@ -871,7 +880,6 @@ function wireImportEvents(root) {
     });
   }
 
-  // Fixture loader buttons
   const loadFixture = async (url, label, isXlsx = false) => {
     try {
       const res = await fetch(url);
@@ -904,7 +912,6 @@ function wireImportEvents(root) {
     loadFixture('./fixtures/sample.xlsx', 'sample.xlsx', true)
   );
 
-  // Mapping dropdown changes
   root.querySelectorAll('[data-map-field]').forEach((sel) => {
     sel.addEventListener('change', () => {
       state.columnMapping[sel.dataset.mapField] = sel.value;
@@ -913,14 +920,12 @@ function wireImportEvents(root) {
     });
   });
 
-  // Re-run auto-guess
   root.querySelector('#btn-auto-guess')?.addEventListener('click', () => {
     state.columnMapping = autoGuessMapping(state.rawHeaders);
     state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
     renderImportScreen(root);
   });
 
-  // Save mapping preset
   root.querySelector('#btn-save-mapping')?.addEventListener('click', async () => {
     const presetName = state.fileName ? `Mapping (${state.fileName})` : 'Default Mapping';
     const sig = buildHeaderSignature(state.rawHeaders);
@@ -934,7 +939,6 @@ function wireImportEvents(root) {
     renderImportScreen(root);
   });
 
-  // Load saved mapping preset
   root.querySelector('#sel-saved-mapping')?.addEventListener('change', (e) => {
     const key = e.target.value;
     if (!key || !state.savedMappings[key]) return;
@@ -943,7 +947,6 @@ function wireImportEvents(root) {
     renderImportScreen(root);
   });
 
-  // Save / Clear donor session
   root.querySelector('#btn-save-session')?.addEventListener('click', async () => {
     await db.saveDonorSession({
       fileName: state.fileName,
@@ -978,6 +981,435 @@ function wireImportEvents(root) {
 
   root.querySelector('#btn-proceed-validate')?.addEventListener('click', () => {
     state.step = 'validate';
+    render();
+  });
+}
+
+/* ============================================================================
+ * STEP 3: VALIDATE & REVIEW SCREEN (INLINE FIXES + MANUAL REVIEW + ANNUAL MERGE)
+ * ========================================================================== */
+function renderValidateScreen(root) {
+  if (!state.mappedRows || state.mappedRows.length === 0) {
+    root.innerHTML = `
+      <div class="card">
+        <h2>3. Validate &amp; Review</h2>
+        <p class="card-subtitle">No donor spreadsheet loaded yet.</p>
+        <div style="margin-top:14px;">
+          <button type="button" class="btn btn-primary" id="btn-goto-import">← Go to Step 2: Import Spreadsheet</button>
+        </div>
+      </div>
+    `;
+    root.querySelector('#btn-goto-import')?.addEventListener('click', () => {
+      state.step = 'import';
+      render();
+    });
+    return;
+  }
+
+  const taxYear = state.orgProfile?.taxYear || 2026;
+  const valResult = validateRows(state.mappedRows, { taxYear });
+  const { counts, rows, validRows, errorRows, manualReviewRows } = valResult;
+
+  const aggPlan = buildAggregationPlan(validRows, {
+    mode: state.orgProfile?.aggregationMode || 'per-gift',
+    taxYear,
+  });
+
+  let filteredRows = rows;
+  if (state.validationFilter === 'error') filteredRows = errorRows;
+  else if (state.validationFilter === 'valid') filteredRows = validRows;
+  else if (state.validationFilter === 'manual_review') filteredRows = manualReviewRows;
+
+  const canProceed =
+    counts.errors === 0 &&
+    counts.valid > 0 &&
+    (!aggPlan.requiresMergeConfirmation || state.annualMergeConfirmed);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>3. Validate &amp; Review Donor Records (Tax Year ${escapeHtml(taxYear)})</h2>
+          <p class="card-subtitle">
+            Every row is checked against CRA &amp; Canadian address rules. Fix errors inline below; out-of-scope gifts are routed to the "Needs Manual Review" bucket.
+          </p>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn" id="btn-revalidate">Re-Validate All</button>
+          ${
+            counts.manualReview > 0
+              ? `<button type="button" class="btn" id="btn-export-manual-csv">Download Manual Review CSV (${counts.manualReview})</button>`
+              : ''
+          }
+        </div>
+      </div>
+
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <div class="kpi-num">${counts.total}</div>
+          <div class="kpi-lbl">Total Imported Rows</div>
+        </div>
+        <div class="kpi-box" style="border-left:4px solid var(--green);">
+          <div class="kpi-num" style="color:var(--green);">${counts.valid}</div>
+          <div class="kpi-lbl">Valid &amp; Ready (${formatMoney(aggPlan.totalAmountCents)})</div>
+        </div>
+        <div class="kpi-box" style="border-left:4px solid var(--red);">
+          <div class="kpi-num" style="color:var(--red);">${counts.errors}</div>
+          <div class="kpi-lbl">Blocking Errors (Fix Inline)</div>
+        </div>
+        <div class="kpi-box" style="border-left:4px solid var(--amber);">
+          <div class="kpi-num" style="color:var(--amber);">${counts.manualReview}</div>
+          <div class="kpi-lbl">Needs Manual Review (Excluded)</div>
+        </div>
+      </div>
+
+      ${
+        counts.errors > 0
+          ? `<div class="callout callout-warn">
+              <strong>Generation Blocked (${counts.errors} error row${counts.errors === 1 ? '' : 's'}):</strong>
+              Fix the highlighted red fields inline below, or move complex rows to the "Needs Manual Review" bucket before generating receipts.
+            </div>`
+          : `<div class="callout callout-success">
+              <strong>All ${counts.valid} eligible rows pass validation!</strong>
+              ${
+                counts.manualReview > 0
+                  ? `(${counts.manualReview} out-of-scope row(s) are safely isolated in the "Needs Manual Review" bucket and will not produce receipts.)`
+                  : ''
+              }
+            </div>`
+      }
+
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin:16px 0 12px;">
+        <div class="filter-pills">
+          <button type="button" class="filter-pill ${state.validationFilter === 'all' ? 'active' : ''}" data-vfilter="all">
+            All Rows (${counts.total})
+          </button>
+          <button type="button" class="filter-pill ${state.validationFilter === 'error' ? 'active' : ''}" data-vfilter="error">
+            Errors Only (${counts.errors})
+          </button>
+          <button type="button" class="filter-pill ${state.validationFilter === 'valid' ? 'active' : ''}" data-vfilter="valid">
+            Valid (${counts.valid})
+          </button>
+          <button type="button" class="filter-pill ${state.validationFilter === 'manual_review' ? 'active' : ''}" data-vfilter="manual_review">
+            Needs Manual Review (${counts.manualReview})
+          </button>
+        </div>
+      </div>
+
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Status / Issues</th>
+              <th>Donor Full Name</th>
+              <th>Street Address</th>
+              <th>City</th>
+              <th>Prov</th>
+              <th>Postal Code</th>
+              <th>Gift Date</th>
+              <th>Amount (CAD)</th>
+              <th>Method</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredRows
+              .map((r) => {
+                const fe = r.fieldErrors || {};
+                const trClass =
+                  r.status === 'error'
+                    ? 'row-error-tr'
+                    : r.status === 'manual_review'
+                    ? 'row-manual-tr'
+                    : '';
+                return `
+                  <tr class="${trClass}" data-row-id="${escapeHtml(r.id)}">
+                    <td>${r.rowIndex}</td>
+                    <td style="min-width:190px;">
+                      ${
+                        r.status === 'valid'
+                          ? `<span class="badge badge-valid">✓ Valid</span>`
+                          : r.status === 'manual_review'
+                          ? `<span class="badge badge-warn">Needs Manual Review</span>
+                             <ul class="err-list" style="color:var(--amber);">
+                               ${r.manualReviewReasons.map((m) => `<li>• ${escapeHtml(m)}</li>`).join('')}
+                             </ul>`
+                          : `<span class="badge badge-error">✕ ${r.errors.length} Error(s)</span>
+                             <ul class="err-list">
+                               ${r.errors.map((e) => `<li>• ${escapeHtml(e)}</li>`).join('')}
+                             </ul>`
+                      }
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input ${fe.fullName ? 'has-err' : ''}"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="fullName"
+                        value="${escapeHtml(r.fullName)}" placeholder="First Last" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input ${fe.addressLine1 ? 'has-err' : ''}"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="addressLine1"
+                        value="${escapeHtml(r.addressLine1)}" placeholder="123 Main St" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input" style="min-width:85px;"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="city"
+                        value="${escapeHtml(r.city)}" placeholder="City" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input" style="min-width:52px; max-width:64px;"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="province"
+                        value="${escapeHtml(r.province)}" placeholder="ON" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input ${fe.postalCode ? 'has-err' : ''}" style="min-width:82px; max-width:98px;"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="postalCode"
+                        value="${escapeHtml(r.postalCode)}" placeholder="M5V 2T6" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input ${fe.date ? 'has-err' : ''}" style="min-width:98px;"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="date"
+                        value="${escapeHtml(r.dateRaw || r.date)}" placeholder="YYYY-MM-DD" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input ${fe.amount ? 'has-err' : ''}" style="min-width:86px;"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="amount"
+                        value="${escapeHtml(r.amountRaw || r.amount)}" placeholder="$100.00" />
+                    </td>
+                    <td>
+                      <input type="text" class="inline-input" style="min-width:90px;"
+                        data-edit-id="${escapeHtml(r.id)}" data-edit-field="method"
+                        value="${escapeHtml(r.method)}" placeholder="e-Transfer" />
+                    </td>
+                    <td style="white-space:nowrap;">
+                      ${
+                        r.isDuplicate && !r.duplicateConfirmed
+                          ? `<button type="button" class="btn" style="padding:4px 8px; min-height:30px; font-size:11.5px;" data-confirm-dup="${escapeHtml(
+                              r.id
+                            )}">Confirm Distinct</button> `
+                          : ''
+                      }
+                      ${
+                        r.status !== 'manual_review'
+                          ? `<button type="button" class="btn" style="padding:4px 8px; min-height:30px; font-size:11.5px;" data-move-manual="${escapeHtml(
+                              r.id
+                            )}">→ Manual Review</button> `
+                          : `<button type="button" class="btn" style="padding:4px 8px; min-height:30px; font-size:11.5px;" data-restore-manual="${escapeHtml(
+                              r.id
+                            )}">Restore as Cash</button> `
+                      }
+                      <button type="button" class="btn btn-danger" style="padding:4px 8px; min-height:30px; font-size:11.5px;" data-delete-row="${escapeHtml(
+                        r.id
+                      )}">Remove</button>
+                    </td>
+                  </tr>
+                `;
+              })
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    ${
+      aggPlan.mode === 'annual' && aggPlan.mergeGroups.length > 0
+        ? `<div class="card">
+            <div class="card-header">
+              <div>
+                <h3>Annual Consolidated Mode — Donor Merge Confirmation (${aggPlan.mergeGroups.length} donors with multiple gifts)</h3>
+                <p class="card-subtitle">
+                  Matched by normalized donor full name + Canadian postal code. Review and confirm the merged annual totals below before generating receipts.
+                </p>
+              </div>
+              <span class="badge badge-blue">${validRows.length} gifts → ${aggPlan.receiptItems.length} annual receipts</span>
+            </div>
+
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Donor Full Name</th>
+                    <th>Postal Code &amp; Address</th>
+                    <th>Gifts Merged</th>
+                    <th>Individual Gifts</th>
+                    <th>Consolidated Annual Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${aggPlan.mergeGroups
+                    .map(
+                      (mg) => `
+                        <tr>
+                          <td><strong>${escapeHtml(mg.donorFullName)}</strong></td>
+                          <td><code>${escapeHtml(mg.postalCode)}</code> · ${escapeHtml(mg.donorAddress)}</td>
+                          <td><span class="badge badge-blue">${mg.giftCount} gifts</span></td>
+                          <td>
+                            ${mg.gifts
+                              .map((g) => `${escapeHtml(g.isoDate)}: <strong>${escapeHtml(g.amountFormatted)}</strong>`)
+                              .join(' + ')}
+                          </td>
+                          <td><strong style="color:var(--blue-d); font-size:14px;">${escapeHtml(mg.amountFormatted)}</strong></td>
+                        </tr>
+                      `
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <div style="margin-top:14px;">
+              <label style="display:flex; align-items:center; gap:8px; font-weight:600; cursor:pointer;">
+                <input type="checkbox" id="chk-confirm-annual-merge" ${state.annualMergeConfirmed ? 'checked' : ''} />
+                I confirm that the ${aggPlan.mergeGroups.length} donor merge group(s) above represent the same individual donors for tax year ${escapeHtml(taxYear)}.
+              </label>
+            </div>
+          </div>`
+        : ''
+    }
+
+    <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+      <button type="button" class="btn" id="btn-back-import">← Back to Column Mapping</button>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span class="hint">
+          ${
+            canProceed
+              ? `Ready to generate <strong>${aggPlan.receiptItems.length}</strong> ${
+                  state.orgProfile?.receiptType === 'official' ? 'Official Tax Receipts' : 'Thank-You Acknowledgements'
+                }.`
+              : counts.errors > 0
+              ? `Fix ${counts.errors} blocking error row(s) to enable generation.`
+              : aggPlan.requiresMergeConfirmation && !state.annualMergeConfirmed
+              ? `Confirm the Annual Donor Merge checkbox above to enable generation.`
+              : 'No valid rows available.'
+          }
+        </span>
+        <button type="button" class="btn btn-primary" id="btn-proceed-generate" ${canProceed ? '' : 'disabled'}>
+          Proceed to Generate (${aggPlan.receiptItems.length} Receipts) →
+        </button>
+      </div>
+    </div>
+  `;
+
+  wireValidateEvents(root, manualReviewRows);
+}
+
+function wireValidateEvents(root, manualReviewRows) {
+  root.querySelectorAll('[data-vfilter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.validationFilter = btn.dataset.vfilter;
+      renderValidateScreen(root);
+    });
+  });
+
+  // Inline edits update state.mappedRows and re-validate on change
+  root.querySelectorAll('[data-edit-id]').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const rowId = inp.dataset.editId;
+      const field = inp.dataset.editField;
+      const target = state.mappedRows.find((r) => r.id === rowId);
+      if (!target) return;
+      target[field] = inp.value.trim();
+      if (field === 'fullName') {
+        target.firstName = '';
+        target.middleInitial = '';
+        target.lastName = '';
+      }
+      renderValidateScreen(root);
+    });
+  });
+
+  root.querySelector('#btn-revalidate')?.addEventListener('click', () => {
+    renderValidateScreen(root);
+  });
+
+  // Confirm duplicate gift
+  root.querySelectorAll('[data-confirm-dup]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const rowId = btn.dataset.confirmDup;
+      const target = state.mappedRows.find((r) => r.id === rowId);
+      if (target) {
+        // Confirm all rows sharing the same donor/date/amount or this specific row
+        target.duplicateConfirmed = true;
+      }
+      renderValidateScreen(root);
+    });
+  });
+
+  // Move row to Manual Review
+  root.querySelectorAll('[data-move-manual]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const rowId = btn.dataset.moveManual;
+      const target = state.mappedRows.find((r) => r.id === rowId);
+      if (target) target.forceManualReview = true;
+      renderValidateScreen(root);
+    });
+  });
+
+  // Restore row from Manual Review as Cash gift
+  root.querySelectorAll('[data-restore-manual]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const rowId = btn.dataset.restoreManual;
+      const target = state.mappedRows.find((r) => r.id === rowId);
+      if (target) {
+        target.forceManualReview = false;
+        target.method = 'Cash';
+        target.advantage = '';
+        target.notes = '';
+        target.isReplacement = false;
+      }
+      renderValidateScreen(root);
+    });
+  });
+
+  // Remove row
+  root.querySelectorAll('[data-delete-row]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const rowId = btn.dataset.deleteRow;
+      state.mappedRows = state.mappedRows.filter((r) => r.id !== rowId);
+      renderValidateScreen(root);
+    });
+  });
+
+  // Export Manual Review CSV
+  root.querySelector('#btn-export-manual-csv')?.addEventListener('click', () => {
+    const headers = ['Row', 'Donor Full Name', 'Address', 'Postal Code', 'Date', 'Amount', 'Method', 'Manual Review Reasons'];
+    const lines = [
+      headers.join(','),
+      ...manualReviewRows.map((r) =>
+        [
+          r.rowIndex,
+          `"${String(r.fullName || '').replace(/"/g, '""')}"`,
+          `"${String(r.addressLine1 || '').replace(/"/g, '""')}"`,
+          `"${String(r.postalCode || '').replace(/"/g, '""')}"`,
+          `"${String(r.dateRaw || r.date || '').replace(/"/g, '""')}"`,
+          `"${String(r.amountRaw || r.amount || '').replace(/"/g, '""')}"`,
+          `"${String(r.method || '').replace(/"/g, '""')}"`,
+          `"${String((r.manualReviewReasons || []).join('; ')).replace(/"/g, '""')}"`,
+        ].join(',')
+      ),
+    ];
+    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `almsy-manual-review-${state.orgProfile?.taxYear || 2026}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // Annual merge confirmation checkbox
+  root.querySelector('#chk-confirm-annual-merge')?.addEventListener('change', (e) => {
+    state.annualMergeConfirmed = e.target.checked;
+    renderValidateScreen(root);
+  });
+
+  root.querySelector('#btn-back-import')?.addEventListener('click', () => {
+    state.step = 'import';
+    render();
+  });
+
+  root.querySelector('#btn-proceed-generate')?.addEventListener('click', () => {
+    state.step = 'generate';
     render();
   });
 }

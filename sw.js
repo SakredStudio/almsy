@@ -24,6 +24,7 @@ const APP_SHELL_ASSETS = [
   './lib/org-profile.js',
   './lib/parse.js',
   './lib/mapping.js',
+  './lib/aggregate.js',
   './fixtures/sample-140.csv',
   './fixtures/messy.csv',
   './fixtures/sample.xlsx',
