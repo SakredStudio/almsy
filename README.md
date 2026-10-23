@@ -88,10 +88,10 @@ projects/almsy/app/
 
 ## 6. Deploy (GitHub Pages, same pattern as Chanda)
 
-Target: https://sakredstudio.github.io/almsy from a public repo `SakredStudio/almsy` that mirrors this folder (the monorepo stays the source of truth). From the sakred-os root, on master:
+Live at https://sakredstudio.github.io/almsy since 2026-10-23. The public repo `SakredStudio/almsy` mirrors this folder (the monorepo stays the source of truth). From the sakred-os root, on master:
 
 ```powershell
 git subtree push --prefix=projects/almsy/app https://github.com/SakredStudio/almsy.git main
 ```
 
-`.github/workflows/deploy.yml` runs the 27 tests and publishes the folder. Enable Pages → Source: GitHub Actions on the repo once. Not deployed yet (2026-10-23): waiting on Soul's go and the domain decision (`almsy.ca`?).
+`.github/workflows/deploy.yml` runs the 27 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. Custom domain (`almsy.ca`?) still open.
