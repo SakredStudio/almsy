@@ -1,0 +1,5 @@
+Almsy Desk © 2026 Sakred Studio. All rights reserved.
+
+The app source in this repository is proprietary. Third-party components keep their own licences:
+- fonts/ (IBM Plex Serif, IBM Plex Sans): SIL Open Font License 1.1, see fonts/OFL.txt
+- vendor/ (pdf-lib, @pdf-lib/fontkit, fflate: MIT; SheetJS xlsx 0.18.5: Apache-2.0), see vendor/LICENSES.txt

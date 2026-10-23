@@ -79,3 +79,19 @@ projects/almsy/app/
 ## 4. Review Log
 
 - **2026-10-23 (Claude):** CRA wording verified; PDF layout fixes (long org names no longer overlap the serial box, signer line right-aligned and shrunk to fit, measured address wrapping, stub glyph fixed); ambiguous slash dates (`03/04/2026`) are now errors unless the column proves the order; register snapshot for faithful re-prints; official mode requires a signature image in the profile; annual merge confirmation and the double-issue guard are enforced on the Generate step; Void asks for confirmation; defaults derive from the current year. 27/27 tests.
+
+---
+
+## 5. Release rule
+
+`sw.js` is cache-first. Computers that already installed the app keep serving the old shell until `CACHE_NAME` in `sw.js` changes, so bump it (`almsy-desk-v3`, `-v4`, ...) in every commit that is deployed.
+
+## 6. Deploy (GitHub Pages, same pattern as Chanda)
+
+Target: https://sakredstudio.github.io/almsy from a public repo `SakredStudio/almsy` that mirrors this folder (the monorepo stays the source of truth). From the sakred-os root, on master:
+
+```powershell
+git subtree push --prefix=projects/almsy/app https://github.com/SakredStudio/almsy.git main
+```
+
+`.github/workflows/deploy.yml` runs the 27 tests and publishes the folder. Enable Pages → Source: GitHub Actions on the repo once. Not deployed yet (2026-10-23): waiting on Soul's go and the domain decision (`almsy.ca`?).
