@@ -16,6 +16,14 @@ import {
   SAMPLE_ACKNOWLEDGEMENT_CLUB_PROFILE,
   SAMPLE_SIGNATURE_DATA_URL,
 } from './lib/org-profile.js';
+import { parseCsvText, parseXlsxBuffer } from './lib/parse.js';
+import {
+  CANONICAL_FIELDS,
+  autoGuessMapping,
+  buildHeaderSignature,
+  applyColumnMapping,
+} from './lib/mapping.js';
+import { validateRows } from './lib/validate.js';
 
 const db = createAlmsyDb();
 
@@ -23,7 +31,16 @@ const state = {
   step: 'profile',
   orgProfile: null,
   highestSequence: 0,
-  profileFeedback: null, // { type: 'success'|'error', message: string }
+  profileFeedback: null,
+  // Import & Mapping state (in-memory for session unless user clicks "Save this session")
+  fileName: '',
+  rawHeaders: [],
+  rawRows: [],
+  columnMapping: {},
+  savedMappings: {},
+  mappedRows: [],
+  importFeedback: null,
+  sessionSavedAt: null,
 };
 
 function escapeHtml(val) {
@@ -43,6 +60,18 @@ async function init() {
 
   state.orgProfile = await db.getOrgProfile();
   state.highestSequence = await db.getHighestSequence(state.orgProfile.receiptPrefix);
+  state.savedMappings = await db.getSavedMappings();
+
+  // Check if user previously clicked "Save this session"
+  const savedSession = await db.getSavedDonorSession();
+  if (savedSession && Array.isArray(savedSession.mappedRows) && savedSession.mappedRows.length > 0) {
+    state.fileName = savedSession.fileName || 'Saved Session';
+    state.rawHeaders = savedSession.rawHeaders || [];
+    state.rawRows = savedSession.rawRows || [];
+    state.columnMapping = savedSession.columnMapping || {};
+    state.mappedRows = savedSession.mappedRows;
+    state.sessionSavedAt = savedSession.savedAt;
+  }
 
   const nav = document.getElementById('step-nav');
   if (nav) {
@@ -75,6 +104,11 @@ function render() {
     return;
   }
 
+  if (state.step === 'import') {
+    renderImportScreen(root);
+    return;
+  }
+
   root.innerHTML = `
     <div class="card">
       <div class="card-header">
@@ -82,7 +116,7 @@ function render() {
           <h2>Step: ${escapeHtml(state.step.toUpperCase())}</h2>
           <p class="card-subtitle">Active Organization: ${escapeHtml(
             state.orgProfile?.legalName || '(Not configured yet)'
-          )}</p>
+          )} · Rows in memory: ${state.mappedRows.length}</p>
         </div>
       </div>
       <div class="callout">${escapeHtml(PRIVACY_SESSION_NOTICE)}</div>
@@ -90,6 +124,9 @@ function render() {
   `;
 }
 
+/* ============================================================================
+ * STEP 1: ORGANIZATION PROFILE SCREEN
+ * ========================================================================== */
 function renderProfileScreen(root) {
   const p = state.orgProfile;
   const validation = validateOrgProfile(p);
@@ -99,7 +136,6 @@ function renderProfileScreen(root) {
 
   root.innerHTML = `
     <div class="grid-2">
-      <!-- Left Column: Organization Profile Form -->
       <div>
         <div class="card">
           <div class="card-header">
@@ -290,7 +326,6 @@ function renderProfileScreen(root) {
         </div>
       </div>
 
-      <!-- Right Column: Live Letterhead & Receipt Preview -->
       <div>
         <div class="card">
           <div class="card-header">
@@ -422,7 +457,6 @@ function readProfileInputsFromDom(root) {
 }
 
 function wireProfileEvents(root) {
-  // Receipt mode cards
   root.querySelectorAll('[data-receipt-type]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.orgProfile = readProfileInputsFromDom(root);
@@ -435,7 +469,6 @@ function wireProfileEvents(root) {
     });
   });
 
-  // Live input sync on change
   const inputIds = [
     'inp-legalName',
     'inp-address',
@@ -459,7 +492,6 @@ function wireProfileEvents(root) {
     });
   });
 
-  // Load sample charity
   const btnCharity = root.querySelector('#btn-load-sample-charity');
   if (btnCharity) {
     btnCharity.addEventListener('click', async () => {
@@ -473,7 +505,6 @@ function wireProfileEvents(root) {
     });
   }
 
-  // Load sample club
   const btnClub = root.querySelector('#btn-load-sample-club');
   if (btnClub) {
     btnClub.addEventListener('click', async () => {
@@ -487,7 +518,6 @@ function wireProfileEvents(root) {
     });
   }
 
-  // Signature upload / sample / clear
   const fileSig = root.querySelector('#file-signature');
   if (fileSig) {
     fileSig.addEventListener('change', (e) => {
@@ -521,7 +551,6 @@ function wireProfileEvents(root) {
     });
   }
 
-  // Logo upload / clear
   const fileLogo = root.querySelector('#file-logo');
   if (fileLogo) {
     fileLogo.addEventListener('change', (e) => {
@@ -546,7 +575,6 @@ function wireProfileEvents(root) {
     });
   }
 
-  // Export profile JSON
   const btnExport = root.querySelector('#btn-export-profile');
   if (btnExport) {
     btnExport.addEventListener('click', () => {
@@ -562,7 +590,6 @@ function wireProfileEvents(root) {
     });
   }
 
-  // Import profile JSON
   const fileImport = root.querySelector('#file-import-profile');
   if (fileImport) {
     fileImport.addEventListener('change', (e) => {
@@ -586,11 +613,10 @@ function wireProfileEvents(root) {
         }
         renderProfileScreen(root);
       };
-      reader.readAsDataURL ? reader.readAsText(file) : null;
+      reader.readAsText(file);
     });
   }
 
-  // Save profile & continue
   const btnSave = root.querySelector('#btn-save-profile');
   if (btnSave) {
     btnSave.addEventListener('click', async () => {
@@ -614,6 +640,346 @@ function wireProfileEvents(root) {
       render();
     });
   }
+}
+
+/* ============================================================================
+ * STEP 2: IMPORT SPREADSHEET & MAP COLUMNS
+ * ========================================================================== */
+function renderImportScreen(root) {
+  const hasFile = state.rawHeaders.length > 0 && state.rawRows.length > 0;
+  const savedMappingNames = Object.keys(state.savedMappings || {});
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>2. Import Donation Spreadsheet &amp; Map Columns</h2>
+          <p class="card-subtitle">
+            Upload a <code>.csv</code> or <code>.xlsx</code> spreadsheet. Everything is parsed in your browser memory — donor data never leaves your computer.
+          </p>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn" id="btn-load-sample-140">Load sample-140.csv (140 rows)</button>
+          <button type="button" class="btn" id="btn-load-messy">Load messy.csv (Error QA)</button>
+          <button type="button" class="btn" id="btn-load-sample-xlsx">Load sample.xlsx (25 rows)</button>
+        </div>
+      </div>
+
+      ${
+        state.importFeedback
+          ? `<div class="callout ${
+              state.importFeedback.type === 'error' ? 'callout-warn' : 'callout-success'
+            }">${escapeHtml(state.importFeedback.message)}</div>`
+          : ''
+      }
+
+      <label class="dropzone" style="display:block;">
+        <div class="dropzone-title">
+          ${
+            hasFile
+              ? `📄 Loaded: ${escapeHtml(state.fileName)} (${state.rawRows.length} rows, ${state.rawHeaders.length} columns)`
+              : 'Click to select a Donation Spreadsheet (.csv or .xlsx)'
+          }
+        </div>
+        <div class="card-subtitle">
+          Supports Excel (.xlsx) and CSV exports from Interac e-Transfer, bank ledgers, or Google Sheets.
+        </div>
+        <input type="file" id="file-spreadsheet" accept=".csv,.xlsx,.xls,text/csv" style="display:none;" />
+      </label>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px;">
+        <div class="hint">
+          🔒 <strong>Session Privacy:</strong> ${escapeHtml(PRIVACY_SESSION_NOTICE)}
+          ${
+            state.sessionSavedAt
+              ? ` <span class="badge badge-valid">Session saved (${escapeHtml(state.sessionSavedAt.slice(0, 19))})</span>`
+              : ''
+          }
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          ${
+            hasFile
+              ? `<button type="button" class="btn" id="btn-save-session">Save this session</button>`
+              : ''
+          }
+          ${
+            state.sessionSavedAt
+              ? `<button type="button" class="btn btn-danger" id="btn-clear-session">Clear saved session</button>`
+              : ''
+          }
+        </div>
+      </div>
+    </div>
+
+    ${
+      hasFile
+        ? `<div class="card">
+            <div class="card-header">
+              <div>
+                <h3>Column Mapping (${state.rawHeaders.length} columns detected)</h3>
+                <p class="card-subtitle">
+                  Almsy auto-guessed your columns below. Adjust any dropdown if needed, or save this mapping for future runs.
+                </p>
+              </div>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                ${
+                  savedMappingNames.length > 0
+                    ? `<select id="sel-saved-mapping" style="padding:7px 10px; border-radius:6px; border:1px solid var(--line);">
+                        <option value="">Load saved mapping…</option>
+                        ${savedMappingNames
+                          .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
+                          .join('')}
+                       </select>`
+                    : ''
+                }
+                <button type="button" class="btn" id="btn-auto-guess">Re-run Auto-Guess</button>
+                <button type="button" class="btn" id="btn-save-mapping">Save Mapping Preset</button>
+              </div>
+            </div>
+
+            <div class="mapping-grid">
+              ${CANONICAL_FIELDS.map((field) => {
+                const selectedCol = state.columnMapping[field.key] || '';
+                const sampleVal =
+                  selectedCol && state.rawRows[0] ? state.rawRows[0][selectedCol] || '' : '';
+                const isMapped = Boolean(selectedCol);
+                return `
+                  <div class="mapping-card ${isMapped ? 'mapped' : field.required ? 'missing-req' : ''}">
+                    <div class="field" style="margin-bottom:0;">
+                      <label for="map-${escapeHtml(field.key)}">
+                        ${escapeHtml(field.label)}
+                        ${field.required ? '<span class="badge badge-warn">Required</span>' : ''}
+                      </label>
+                      <select id="map-${escapeHtml(field.key)}" data-map-field="${escapeHtml(field.key)}">
+                        <option value="">— Not mapped —</option>
+                        ${state.rawHeaders
+                          .map(
+                            (h) =>
+                              `<option value="${escapeHtml(h)}" ${
+                                selectedCol === h ? 'selected' : ''
+                              }>${escapeHtml(h)}</option>`
+                          )
+                          .join('')}
+                      </select>
+                      <span class="hint">
+                        ${
+                          isMapped
+                            ? `Row 1 sample: <strong>${escapeHtml(sampleVal || '(empty)')}</strong>`
+                            : 'Select column if present'
+                        }
+                      </span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            <div style="margin-top:20px;">
+              <h4>Preview of Mapped Donor Rows (First 5 of ${state.mappedRows.length})</h4>
+              <div class="table-scroll" style="margin-top:8px;">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Donor Full Name</th>
+                      <th>Street Address</th>
+                      <th>City / Prov</th>
+                      <th>Postal Code</th>
+                      <th>Gift Date</th>
+                      <th>Amount</th>
+                      <th>Method</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${state.mappedRows
+                      .slice(0, 5)
+                      .map(
+                        (r) => `
+                          <tr>
+                            <td>${r.rowIndex}</td>
+                            <td><strong>${escapeHtml(r.fullName || '—')}</strong></td>
+                            <td>${escapeHtml(r.addressLine1 || '—')}</td>
+                            <td>${escapeHtml([r.city, r.province].filter(Boolean).join(', ') || '—')}</td>
+                            <td><code>${escapeHtml(r.postalCode || '—')}</code></td>
+                            <td>${escapeHtml(r.date || '—')}</td>
+                            <td><strong>${escapeHtml(r.amount || '—')}</strong></td>
+                            <td>${escapeHtml(r.method || '—')}</td>
+                          </tr>
+                        `
+                      )
+                      .join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:18px; padding-top:16px; border-top:1px solid var(--line);">
+              <button type="button" class="btn" id="btn-back-profile">← Back to Profile</button>
+              <button type="button" class="btn btn-primary" id="btn-proceed-validate">
+                Validate ${state.mappedRows.length} Rows →
+              </button>
+            </div>
+          </div>`
+        : ''
+    }
+  `;
+
+  wireImportEvents(root);
+}
+
+async function ingestParsedSheet(fileName, headers, rows) {
+  state.fileName = fileName;
+  state.rawHeaders = headers;
+  state.rawRows = rows;
+
+  const sig = buildHeaderSignature(headers);
+  if (state.savedMappings && state.savedMappings[sig]) {
+    state.columnMapping = { ...state.savedMappings[sig] };
+  } else {
+    state.columnMapping = autoGuessMapping(headers);
+  }
+  state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
+  state.importFeedback = {
+    type: 'success',
+    message: `Loaded "${fileName}" (${rows.length} donor rows) and auto-mapped columns.`,
+  };
+}
+
+function wireImportEvents(root) {
+  const fileInput = root.querySelector('#file-spreadsheet');
+  if (fileInput) {
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        if (/\.xlsx?$/i.test(file.name)) {
+          const buf = await file.arrayBuffer();
+          const parsed = parseXlsxBuffer(buf);
+          await ingestParsedSheet(file.name, parsed.headers, parsed.rows);
+        } else {
+          const text = await file.text();
+          const parsed = parseCsvText(text);
+          await ingestParsedSheet(file.name, parsed.headers, parsed.rows);
+        }
+      } catch (err) {
+        state.importFeedback = {
+          type: 'error',
+          message: `Failed to parse file: ${err.message}`,
+        };
+      }
+      renderImportScreen(root);
+    });
+  }
+
+  // Fixture loader buttons
+  const loadFixture = async (url, label, isXlsx = false) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (isXlsx) {
+        const buf = await res.arrayBuffer();
+        const parsed = parseXlsxBuffer(buf);
+        await ingestParsedSheet(label, parsed.headers, parsed.rows);
+      } else {
+        const text = await res.text();
+        const parsed = parseCsvText(text);
+        await ingestParsedSheet(label, parsed.headers, parsed.rows);
+      }
+    } catch (err) {
+      state.importFeedback = {
+        type: 'error',
+        message: `Could not load fixture ${label}: ${err.message}`,
+      };
+    }
+    renderImportScreen(root);
+  };
+
+  root.querySelector('#btn-load-sample-140')?.addEventListener('click', () =>
+    loadFixture('./fixtures/sample-140.csv', 'sample-140.csv', false)
+  );
+  root.querySelector('#btn-load-messy')?.addEventListener('click', () =>
+    loadFixture('./fixtures/messy.csv', 'messy.csv', false)
+  );
+  root.querySelector('#btn-load-sample-xlsx')?.addEventListener('click', () =>
+    loadFixture('./fixtures/sample.xlsx', 'sample.xlsx', true)
+  );
+
+  // Mapping dropdown changes
+  root.querySelectorAll('[data-map-field]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      state.columnMapping[sel.dataset.mapField] = sel.value;
+      state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
+      renderImportScreen(root);
+    });
+  });
+
+  // Re-run auto-guess
+  root.querySelector('#btn-auto-guess')?.addEventListener('click', () => {
+    state.columnMapping = autoGuessMapping(state.rawHeaders);
+    state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
+    renderImportScreen(root);
+  });
+
+  // Save mapping preset
+  root.querySelector('#btn-save-mapping')?.addEventListener('click', async () => {
+    const presetName = state.fileName ? `Mapping (${state.fileName})` : 'Default Mapping';
+    const sig = buildHeaderSignature(state.rawHeaders);
+    await db.saveColumnMapping(presetName, state.columnMapping);
+    await db.saveColumnMapping(sig, state.columnMapping);
+    state.savedMappings = await db.getSavedMappings();
+    state.importFeedback = {
+      type: 'success',
+      message: `Saved column mapping preset "${presetName}".`,
+    };
+    renderImportScreen(root);
+  });
+
+  // Load saved mapping preset
+  root.querySelector('#sel-saved-mapping')?.addEventListener('change', (e) => {
+    const key = e.target.value;
+    if (!key || !state.savedMappings[key]) return;
+    state.columnMapping = { ...state.savedMappings[key] };
+    state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
+    renderImportScreen(root);
+  });
+
+  // Save / Clear donor session
+  root.querySelector('#btn-save-session')?.addEventListener('click', async () => {
+    await db.saveDonorSession({
+      fileName: state.fileName,
+      rawHeaders: state.rawHeaders,
+      rawRows: state.rawRows,
+      columnMapping: state.columnMapping,
+      mappedRows: state.mappedRows,
+    });
+    const saved = await db.getSavedDonorSession();
+    state.sessionSavedAt = saved?.savedAt || new Date().toISOString();
+    state.importFeedback = {
+      type: 'success',
+      message: 'Donor session saved to local IndexedDB on this computer.',
+    };
+    renderImportScreen(root);
+  });
+
+  root.querySelector('#btn-clear-session')?.addEventListener('click', async () => {
+    await db.clearSavedDonorSession();
+    state.sessionSavedAt = null;
+    state.importFeedback = {
+      type: 'success',
+      message: 'Cleared saved session from local IndexedDB (rows remain in memory until tab closes).',
+    };
+    renderImportScreen(root);
+  });
+
+  root.querySelector('#btn-back-profile')?.addEventListener('click', () => {
+    state.step = 'profile';
+    render();
+  });
+
+  root.querySelector('#btn-proceed-validate')?.addEventListener('click', () => {
+    state.step = 'validate';
+    render();
+  });
 }
 
 if (typeof document !== 'undefined') {
