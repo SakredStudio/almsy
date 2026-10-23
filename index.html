@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en-CA">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#15181E" />
+  <meta name="description" content="Almsy Desk — Offline CRA Receipt & Thank-You Acknowledgement Generator for Canadian charities, temples, clubs, and community groups." />
+  <title>Almsy Desk — Offline Receipt &amp; Compliance Generator</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./fonts/fonts.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">A</div>
+        <div>
+          <div class="brand-title">Alm<span>sy</span> Desk</div>
+          <div class="brand-sub">Compliant Receipts &amp; Acknowledgements · Canadian Charities &amp; Community Orgs</div>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span class="privacy-pill" id="privacy-pill">🔒 100% On-Device · Donor data never leaves this computer</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="step-nav" aria-label="Receipt generation steps">
+    <div class="step-nav-inner" id="step-nav">
+      <button type="button" class="step-tab active" data-step="profile">
+        <span class="step-num">1</span> Organization Profile
+      </button>
+      <button type="button" class="step-tab" data-step="import">
+        <span class="step-num">2</span> Import &amp; Map Columns
+      </button>
+      <button type="button" class="step-tab" data-step="validate">
+        <span class="step-num">3</span> Validate &amp; Review
+      </button>
+      <button type="button" class="step-tab" data-step="generate">
+        <span class="step-num">4</span> Generate &amp; Register
+      </button>
+    </div>
+  </nav>
+
+  <main class="main-wrap" id="app-root" aria-live="polite">
+    <div class="card">
+      <h2>Loading Almsy Desk…</h2>
+      <p class="card-subtitle">Initializing local IndexedDB workspace.</p>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <div class="app-footer-inner">
+      <div class="disclaimer-banner" id="footer-disclaimer">
+        Almsy formats receipts from your records. Your organization is responsible for receipt eligibility. This is not tax advice.
+      </div>
+      <div id="footer-session-notice">
+        Donor rows live in memory for the session unless you click "Save this session".
+      </div>
+    </div>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
