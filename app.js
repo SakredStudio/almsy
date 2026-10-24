@@ -1836,6 +1836,21 @@ function wireGenerateEvents(root) {
   });
 }
 
+function renderFatal(err) {
+  const root = document.getElementById('app-root');
+  if (!root) return;
+  root.innerHTML = `
+    <div class="card" style="border-left:5px solid var(--red);">
+      <h2>Almsy Desk could not start</h2>
+      <p class="card-subtitle">${escapeHtml(err && err.message ? err.message : String(err))}</p>
+      <p class="hint">Nothing was lost: your profile and receipt register stay in this browser's local storage. Reload to try again. If it keeps happening, close other Almsy tabs or windows first.</p>
+      <div style="margin-top:14px;">
+        <button type="button" class="btn btn-primary" id="btn-reload-app">Reload</button>
+      </div>
+    </div>`;
+  root.querySelector('#btn-reload-app')?.addEventListener('click', () => window.location.reload());
+}
+
 if (typeof document !== 'undefined') {
-  init();
+  init().catch(renderFatal);
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'almsy-desk-v3';
+const CACHE_NAME = 'almsy-desk-v4';
 
 const APP_SHELL_ASSETS = [
   './',
@@ -60,16 +60,35 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  // Only handle same-origin requests; let the browser deal with anything else.
+  if (url.origin !== self.location.origin) return;
+  const isNavigation = event.request.mode === 'navigate';
+
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((res) => {
-        if (res && res.status === 200 && res.type === 'basic') {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
+    caches
+      .match(event.request, { ignoreSearch: isNavigation })
+      .then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((res) => {
+          if (res && res.status === 200 && res.type === 'basic') {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, clone)).catch(() => {});
+          }
+          return res;
+        });
+      })
+      .catch(async () => {
+        // Network failed (offline, TLS, DNS) and nothing cached for this exact URL:
+        // navigations fall back to the cached app shell so the app never hangs on the splash.
+        if (isNavigation) {
+          const shell = (await caches.match('./index.html')) || (await caches.match('./'));
+          if (shell) return shell;
         }
-        return res;
-      });
-    })
+        return new Response('Almsy Desk is offline and this file is not cached yet.', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
+      })
   );
 });
