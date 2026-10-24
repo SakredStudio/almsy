@@ -693,7 +693,7 @@ function renderImportScreen(root) {
         <div>
           <h2>2. Import Donation Spreadsheet &amp; Map Columns</h2>
           <p class="card-subtitle">
-            Upload a <code>.csv</code> or <code>.xlsx</code> spreadsheet. Everything is parsed in your browser memory — donor data never leaves your computer.
+            Upload a <code>.csv</code> or <code>.xlsx</code> spreadsheet. Everything is parsed in your browser memory — donor data never leaves your device.
           </p>
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -990,7 +990,7 @@ function wireImportEvents(root) {
     state.sessionSavedAt = saved?.savedAt || new Date().toISOString();
     state.importFeedback = {
       type: 'success',
-      message: 'Donor session saved to local IndexedDB on this computer.',
+      message: 'Donor session saved to local storage on this device.',
     };
     renderImportScreen(root);
   });

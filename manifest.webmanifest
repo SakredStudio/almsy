@@ -1,7 +1,7 @@
 {
   "name": "Almsy Desk — Offline CRA Receipt & Acknowledgement Generator",
   "short_name": "Almsy Desk",
-  "description": "Offline-first receipt and acknowledgement generator for Canadian charities, temples, clubs, and community groups. Donor data never leaves your computer.",
+  "description": "Offline-first receipt and acknowledgement generator for Canadian charities, temples, clubs, and community groups. Donor data never leaves your device.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
