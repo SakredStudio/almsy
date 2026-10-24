@@ -88,10 +88,10 @@ projects/almsy/app/
 
 ## 6. Deploy (GitHub Pages, same pattern as Chanda)
 
-Live at https://sakredstudio.github.io/almsy since 2026-10-23. The public repo `SakredStudio/almsy` mirrors this folder (the monorepo stays the source of truth). From the sakred-os root, on master:
+Live at **https://almsy.sakredstudio.ca** since 2026-10-23 (custom domain on GitHub Pages: Cloudflare CNAME `almsy` → `sakredstudio.github.io`, DNS only; HTTPS enforced; sakredstudio.github.io/almsy redirects there). The public repo `SakredStudio/almsy` mirrors this folder (the monorepo stays the source of truth). From the sakred-os root, on master:
 
 ```powershell
 git subtree push --prefix=projects/almsy/app https://github.com/SakredStudio/almsy.git main
 ```
 
-`.github/workflows/deploy.yml` runs the 27 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. Custom domain (`almsy.ca`?) still open.
+`.github/workflows/deploy.yml` runs the 27 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. A brand domain (`almsy.ca`?) can replace the subdomain later with the same CNAME change.

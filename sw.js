@@ -1,4 +1,4 @@
-const CACHE_NAME = 'almsy-desk-v2';
+const CACHE_NAME = 'almsy-desk-v3';
 
 const APP_SHELL_ASSETS = [
   './',
