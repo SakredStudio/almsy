@@ -1,4 +1,4 @@
-const CACHE_NAME = 'almsy-desk-v7';
+const CACHE_NAME = 'almsy-desk-v8';
 
 const APP_SHELL_ASSETS = [
   './',
@@ -28,6 +28,7 @@ const APP_SHELL_ASSETS = [
   './lib/numbering.js',
   './lib/receipt-model.js',
   './lib/generate-run.js',
+  './lib/supported-plan.js',
   './pdf/layout.js',
   './fixtures/sample-140.csv',
   './fixtures/messy.csv',
@@ -71,7 +72,8 @@ self.addEventListener('fetch', (event) => {
       .then((cached) => {
         if (cached) return cached;
         return fetch(event.request).then((res) => {
-          if (res && res.status === 200 && res.type === 'basic') {
+          // Never store a redirected response: a redirected page cannot answer a page load.
+          if (res && res.status === 200 && res.type === 'basic' && !res.redirected) {
             const clone = res.clone();
             caches.open(CACHE_NAME).then((c) => c.put(event.request, clone)).catch(() => {});
           }

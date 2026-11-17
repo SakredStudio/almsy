@@ -82,11 +82,23 @@ projects/almsy/app/
 
 ---
 
-## 5. Release rule
+## 5. Supported plan (CA$79/yr per charity) — built 2026-11-16, SWITCHED OFF
+
+Almsy Desk stays free and complete; the source is public, so there is no licence check and nothing is locked.
+`lib/supported-plan.js` renders a "Supported plan" card on the Organization Profile screen (also reached from the footer link)
+and one gentle note after the first batch export (ZIP or combined PDF), until "No thanks" / "See the Supported plan"
+(remembered in the IndexedDB `settings` store as `supportedPlanPrompt`). Setup call, priority help in Jan–Feb, CRA wording
+check, early fixes; founding pilot charities: first year free ("ask us"). Donor data never leaves the device.
+
+`SUPPORTED_PLAN_PAYMENT_LINK` ships empty, so the button emails office@sakredstudio.ca
+(subject "Almsy Desk for organizations - Supported plan"). To switch on: paste the Stripe Payment Link
+(`https://buy.stripe.com/...`), bump `CACHE_NAME` in `sw.js`, run the tests, publish (section 7).
+
+## 6. Release rule
 
 `sw.js` is cache-first. Computers that already installed the app keep serving the old shell until `CACHE_NAME` in `sw.js` changes, so bump it (`almsy-desk-v3`, `-v4`, ...) in every commit that is deployed.
 
-## 6. Deploy (GitHub Pages, same pattern as Chanda)
+## 7. Deploy (GitHub Pages, same pattern as Chanda)
 
 Live at **https://almsy.sakredstudio.ca** since 2026-10-23 (custom domain on GitHub Pages: Cloudflare CNAME `almsy` → `sakredstudio.github.io`, DNS only; HTTPS enforced; sakredstudio.github.io/almsy redirects there). The public repo `SakredStudio/almsy` mirrors this folder (the monorepo stays the source of truth). From the sakred-os root, on master:
 
@@ -94,4 +106,4 @@ Live at **https://almsy.sakredstudio.ca** since 2026-10-23 (custom domain on Git
 git subtree push --prefix=projects/almsy/app https://github.com/SakredStudio/almsy.git main
 ```
 
-`.github/workflows/deploy.yml` runs the 27 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. A brand domain (`almsy.ca`?) can replace the subdomain later with the same CNAME change.
+`.github/workflows/deploy.yml` runs the 32 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. A brand domain (`almsy.ca`?) can replace the subdomain later with the same CNAME change.

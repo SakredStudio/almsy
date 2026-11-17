@@ -787,3 +787,18 @@ h1, h2, h3, h4 {
   color: var(--red);
   font-weight: 600;
 }
+
+/* Supported plan (2026-11-16): card on the Organization Profile screen, gentle note after a batch export */
+.supported-card { border-top: 4px solid var(--blue); }
+.supported-lead { margin: 4px 0 6px; }
+.supported-list { margin: 0 0 10px; padding-left: 20px; line-height: 1.55; }
+.supported-list li { margin: 0 0 4px; }
+.supported-price { margin: 0 0 10px; }
+.supported-privacy { margin: 0 0 12px; }
+.supported-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.supported-actions .btn { text-decoration: none; display: inline-flex; align-items: center; }
+.supported-terms p { margin: 0 0 4px; font-size: 12px; color: var(--muted, #5b6170); line-height: 1.5; }
+.supported-prompt { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.supported-prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.footer-supported { font-size: 12px; }
+.footer-supported a { color: var(--blue-l); font-weight: 600; }

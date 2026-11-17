@@ -29,6 +29,12 @@ import { formatSerial, voidReceipt, exportRegisterCsv } from './lib/numbering.js
 import { buildReceiptModel } from './lib/receipt-model.js';
 import { renderSingleReceiptPdf } from './pdf/layout.js';
 import { executeGenerationRun } from './lib/generate-run.js';
+import {
+  renderSupportedPlanCard,
+  renderSupportedPrompt,
+  shouldShowSupportedPrompt,
+  dismissSupportedPrompt,
+} from './lib/supported-plan.js';
 
 const db = createAlmsyDb();
 
@@ -55,6 +61,8 @@ const state = {
   lastIssuedSignature: null,
   generateFeedback: null,
   registerEntries: [],
+  // Supported plan: gentle prompt after a batch export (until closed once; remembered in IndexedDB settings)
+  supportedPrompt: false,
 };
 
 function escapeHtml(val) {
@@ -126,6 +134,12 @@ async function init() {
       render();
     });
   }
+
+  document.getElementById('footer-supported')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    await refreshRegisterState();
+    showSupportedPlan();
+  });
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -468,6 +482,7 @@ function renderProfileScreen(root) {
             </div>
           </div>
         </div>
+        ${renderSupportedPlanCard()}
       </div>
     </div>
   `;
@@ -1593,6 +1608,7 @@ function renderGenerateScreen(root) {
                 </button>
               </div>
             </div>
+            ${state.supportedPrompt ? renderSupportedPrompt() : ''}
           </div>`
         : ''
     }
@@ -1736,6 +1752,7 @@ function wireGenerateEvents(root) {
       `Almsy_Receipts_${state.lastRunResult.runId}.zip`,
       'application/zip'
     );
+    void afterBatchExport(root);
   });
 
   root.querySelector('#btn-dl-combined-pdf')?.addEventListener('click', () => {
@@ -1745,6 +1762,19 @@ function wireGenerateEvents(root) {
       `FILE_COPY_Combined_${state.lastRunResult.runId}.pdf`,
       'application/pdf'
     );
+    void afterBatchExport(root);
+  });
+
+  root.querySelector('#btn-see-supported')?.addEventListener('click', async () => {
+    state.supportedPrompt = false;
+    await dismissSupportedPrompt(db).catch(() => {});
+    showSupportedPlan();
+  });
+
+  root.querySelector('#btn-dismiss-supported')?.addEventListener('click', async () => {
+    state.supportedPrompt = false;
+    root.querySelector('#supported-prompt')?.remove();
+    await dismissSupportedPrompt(db).catch(() => {});
   });
 
   root.querySelector('#btn-dl-run-csv')?.addEventListener('click', () => {
@@ -1834,6 +1864,21 @@ function wireGenerateEvents(root) {
       renderGenerateScreen(root);
     });
   });
+}
+
+/** After a batch export (ZIP or combined PDF): one gentle Supported plan note, unless it was closed before. */
+async function afterBatchExport(root) {
+  if (state.supportedPrompt || root.querySelector('#supported-prompt')) return;
+  if (!(await shouldShowSupportedPrompt(db))) return;
+  state.supportedPrompt = true;
+  if (state.step === 'generate') renderGenerateScreen(root);
+}
+
+/** Open the Organization Profile screen at the Supported plan card. */
+function showSupportedPlan() {
+  state.step = 'profile';
+  render();
+  document.getElementById('supported-plan')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderFatal(err) {
