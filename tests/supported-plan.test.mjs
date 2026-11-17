@@ -62,7 +62,7 @@ test('supported plan: card says it stays free, keeps the donor-data promise, sho
   assert.match(card, /not tax or legal advice/);
   assert.doesNotMatch(card, /buy\.stripe\.com/);
   assert.equal(SUPPORTED_TERMS.length, 4);
-  assert.ok(card.includes('Prices rise by 4% at each yearly renewal, rounded to the nearest dollar. We email you at least 30 days before an increase, and you can cancel before it takes effect.'));
+  assert.ok(card.includes('Prices rise by 4% at each yearly renewal, rounded to the nearest dollar. We email you at least 30 days before an increase, and you can cancel before it takes effect. A year without a rise is never made up later.'));
   assert.match(renderSupportedPrompt(), /Almsy Desk stays free/);
   assert.match(renderSupportedPrompt(), /No thanks/);
 });
