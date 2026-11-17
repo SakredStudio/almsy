@@ -93,6 +93,8 @@ check, early fixes; founding pilot charities: first year free ("ask us"). Donor 
 `SUPPORTED_PLAN_PAYMENT_LINK` ships empty, so the button emails office@sakredstudio.ca
 (subject "Almsy Desk for organizations - Supported plan"). To switch on: paste the Stripe Payment Link
 (`https://buy.stripe.com/...`), bump `CACHE_NAME` in `sw.js`, run the tests, publish (section 7).
+The card's terms include the yearly increase: "Prices rise by 4% at each yearly renewal, rounded to the nearest dollar…"
+(year N = round(79 × 1.04^(N-1)): 79, 82, 85; `priceForYear` in `lib/supported-plan.js`).
 
 ## 6. Release rule
 
@@ -106,4 +108,4 @@ Live at **https://almsy.sakredstudio.ca** since 2026-10-23 (custom domain on Git
 git subtree push --prefix=projects/almsy/app https://github.com/SakredStudio/almsy.git main
 ```
 
-`.github/workflows/deploy.yml` runs the 32 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. A brand domain (`almsy.ca`?) can replace the subdomain later with the same CNAME change.
+`.github/workflows/deploy.yml` runs the 33 tests and publishes the folder (Pages source = GitHub Actions, already enabled). Bump `CACHE_NAME` in `sw.js` first. A brand domain (`almsy.ca`?) can replace the subdomain later with the same CNAME change.

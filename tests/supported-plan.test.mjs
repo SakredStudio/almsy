@@ -16,6 +16,8 @@ import {
   shouldShowSupportedPrompt,
   dismissSupportedPrompt,
   PROMPT_SETTING_KEY,
+  priceForYear,
+  INCREASE_TERM,
 } from '../lib/supported-plan.js';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,7 +61,8 @@ test('supported plan: card says it stays free, keeps the donor-data promise, sho
   assert.match(card, /runs to the end of the year you paid for/);
   assert.match(card, /not tax or legal advice/);
   assert.doesNotMatch(card, /buy\.stripe\.com/);
-  assert.equal(SUPPORTED_TERMS.length, 3);
+  assert.equal(SUPPORTED_TERMS.length, 4);
+  assert.ok(card.includes('Prices rise by 4% at each yearly renewal, rounded to the nearest dollar. We email you at least 30 days before an increase, and you can cancel before it takes effect.'));
   assert.match(renderSupportedPrompt(), /Almsy Desk stays free/);
   assert.match(renderSupportedPrompt(), /No thanks/);
 });
@@ -73,6 +76,13 @@ test('supported plan: no licence gate anywhere: nothing checks the plan to lock 
   assert.doesNotMatch(src, /\bfetch\(|XMLHttpRequest|sendBeacon/, 'no network calls');
   const app = fs.readFileSync(path.join(appRoot, 'app.js'), 'utf8');
   assert.doesNotMatch(app, /isSupported|hasSupportedPlan|supportedPlanActive/);
+});
+
+test('supported plan: 4% yearly increase = round(79 × 1.04^(year-1)): 79, 82, 85', () => {
+  assert.deepEqual([1, 2, 3].map((y) => priceForYear(79, y)), [79, 82, 85]);
+  assert.equal(priceForYear(79, 4), Math.round(79 * 1.04 ** 3));
+  assert.throws(() => priceForYear(79, 0));
+  assert.ok(SUPPORTED_TERMS.includes(INCREASE_TERM));
 });
 
 test('supported plan: the after-export prompt shows until closed once, and the close is remembered locally', async () => {
