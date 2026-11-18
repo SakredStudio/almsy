@@ -22,10 +22,13 @@ import {
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('supported plan: ships switched off, so the button emails office@ with the plan in the subject', () => {
-  assert.equal(SUPPORTED_PLAN_PAYMENT_LINK, '');
+test('supported plan: the live Stripe link pays online; with no link the button emails office@ with the plan in the subject', () => {
+  assert.equal(SUPPORTED_PLAN_PAYMENT_LINK, 'https://buy.stripe.com/14AdRaf0J8dPdgx1PX1sQ06');
+  assert.ok(isPaymentLink(SUPPORTED_PLAN_PAYMENT_LINK) && !/test_/.test(SUPPORTED_PLAN_PAYMENT_LINK), 'live-mode link');
+  assert.equal(supportedPlanAction().kind, 'pay');
+  assert.match(renderSupportedPlanCard(), /href="https:\/\/buy\.stripe\.com\/14AdRaf0J8dPdgx1PX1sQ06"/);
   assert.equal(SUPPORTED_PLAN.priceCad, 79);
-  const act = supportedPlanAction();
+  const act = supportedPlanAction('');
   assert.equal(act.kind, 'talk');
   assert.equal(act.label, 'Talk to us');
   assert.equal(act.href, 'mailto:office@sakredstudio.ca?subject=Almsy%20Desk%20for%20organizations%20-%20Supported%20plan');
@@ -45,7 +48,7 @@ test('supported plan: only a Stripe Payment Link switches on paying online', () 
 });
 
 test('supported plan: card says it stays free, keeps the donor-data promise, shows price, tax and refund terms', () => {
-  const card = renderSupportedPlanCard();
+  const card = renderSupportedPlanCard('');
   assert.match(card, /stays free and complete for small charities/);
   assert.match(card, /Donor data never leaves your device/);
   assert.match(card, /CA\$79 per year, per charity, \+ applicable tax/);
