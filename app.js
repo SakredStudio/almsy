@@ -7,6 +7,7 @@ import {
 } from './lib/cra-text.js';
 import { createAlmsyDb } from './lib/db.js';
 import { formatMoney } from './lib/money.js';
+import { findText, findMatches } from './lib/find.js';
 import {
   validateOrgProfile,
   formatSerialNumberPreview,
@@ -146,6 +147,38 @@ async function init() {
   }
 
   render();
+}
+
+// ---------- find boxes (2026-11-24) ----------
+// One box above the donor review table and one above the receipt register. Rows that do not match are only
+// hidden: exports and receipt runs always use every row. What was typed survives a redraw of the screen.
+const findState = { review: '', register: '' };
+function findBox(key, placeholder) {
+  return `<div class="find-box"><input type="search" class="find-input" data-find-box="${key}" value="${escapeHtml(
+    findState[key]
+  )}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(
+    placeholder
+  )}" autocomplete="off" spellcheck="false" /><span class="find-count" data-find-count="${key}" role="status" aria-live="polite"></span></div>`;
+}
+function wireFind(root, key) {
+  const box = root.querySelector(`[data-find-box="${key}"]`);
+  if (!box) return;
+  const rows = [...root.querySelectorAll(`tr[data-find-row="${key}"]`)];
+  const count = root.querySelector(`[data-find-count="${key}"]`);
+  const apply = () => {
+    let shown = 0;
+    for (const tr of rows) {
+      const ok = findMatches(tr.dataset.find, findState[key]);
+      tr.hidden = !ok;
+      if (ok) shown += 1;
+    }
+    count.textContent = findState[key].trim() ? (shown === 0 ? 'No rows match' : `Showing ${shown} of ${rows.length}`) : '';
+  };
+  box.addEventListener('input', () => {
+    findState[key] = box.value;
+    apply();
+  });
+  apply();
 }
 
 function render() {
@@ -892,6 +925,7 @@ async function ingestParsedSheet(fileName, headers, rows) {
     state.columnMapping = autoGuessMapping(headers);
   }
   state.mappedRows = applyColumnMapping(state.rawRows, state.columnMapping);
+  findState.review = '';
   state.annualMergeConfirmed = false;
   state.lastRunResult = null;
   state.importFeedback = {
@@ -1140,6 +1174,7 @@ function renderValidateScreen(root) {
             Needs Manual Review (${counts.manualReview})
           </button>
         </div>
+        ${findBox('review', 'Find a donor: name, address, postal code, amount')}
       </div>
 
       <div class="table-scroll">
@@ -1170,7 +1205,9 @@ function renderValidateScreen(root) {
                     ? 'row-manual-tr'
                     : '';
                 return `
-                  <tr class="${trClass}" data-row-id="${escapeHtml(r.id)}">
+                  <tr class="${trClass}" data-row-id="${escapeHtml(r.id)}" data-find-row="review" data-find="${escapeHtml(
+                    findText([r.fullName, r.addressLine1, r.city, r.province, r.postalCode, r.dateRaw || r.date, r.amountRaw || r.amount, r.method])
+                  )}">
                     <td>${r.rowIndex}</td>
                     <td style="min-width:190px;">
                       ${
@@ -1340,6 +1377,7 @@ function renderValidateScreen(root) {
 }
 
 function wireValidateEvents(root, manualReviewRows) {
+  wireFind(root, 'review');
   root.querySelectorAll('[data-vfilter]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.validationFilter = btn.dataset.vfilter;
@@ -1621,7 +1659,8 @@ function renderGenerateScreen(root) {
             Stored in local IndexedDB. Serial numbers are never reused or decremented. Marking a receipt <strong>VOID</strong> keeps it in the register for your CRA audit trail.
           </p>
         </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          ${sortedRegister.length > 0 ? findBox('register', 'Find a receipt: serial, donor, amount, year') : ''}
           ${
             sortedRegister.length > 0
               ? `<button type="button" class="btn" id="btn-export-full-register">⬇ Download Register CSV (${sortedRegister.length})</button>`
@@ -1653,7 +1692,10 @@ function renderGenerateScreen(root) {
                   ${sortedRegister
                     .map(
                       (entry) => `
-                        <tr data-serial="${escapeHtml(entry.serialNumber)}">
+                        <tr data-serial="${escapeHtml(entry.serialNumber)}" data-find-row="register" data-find="${escapeHtml(
+                          findText([entry.serialNumber, entry.receiptType, entry.status === 'VOID' ? 'VOID' : 'ISSUED', entry.donorName, entry.donorAddress,
+                            entry.amountFormatted || formatMoney(entry.amountCents), entry.giftDateOrYear, entry.issueDate, entry.runId, entry.voidReason])
+                        )}">
                           <td><code style="font-weight:700;">${escapeHtml(entry.serialNumber)}</code></td>
                           <td>
                             <span class="badge ${entry.receiptType === 'official' ? 'badge-blue' : 'badge-valid'}">
@@ -1786,6 +1828,7 @@ function wireGenerateEvents(root) {
     );
   });
 
+  wireFind(root, 'register');
   root.querySelector('#btn-export-full-register')?.addEventListener('click', () => {
     const csv = exportRegisterCsv(state.registerEntries);
     triggerDownload(

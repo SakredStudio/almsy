@@ -802,3 +802,10 @@ h1, h2, h3, h4 {
 .supported-prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .footer-supported { font-size: 12px; }
 .footer-supported a { color: var(--blue-l); font-weight: 600; }
+
+/* Find boxes on the donor review table and the receipt register (2026-11-24) */
+.find-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.find-input { font: inherit; font-size: 14px; padding: 8px 12px; min-height: 38px; width: min(340px, 100%); border: 1px solid var(--line); border-radius: 8px; background: #fff; color: inherit; }
+.find-input:focus-visible { outline: 2px solid var(--blue, #1d4ed8); outline-offset: 1px; }
+.find-count { font-size: 13px; color: var(--muted, #6b7280); white-space: nowrap; }
+.data-table tr[hidden] { display: none; }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'almsy-desk-v11';
+const CACHE_NAME = 'almsy-desk-v12';
 
 const APP_SHELL_ASSETS = [
   './',
@@ -29,6 +29,7 @@ const APP_SHELL_ASSETS = [
   './lib/receipt-model.js',
   './lib/generate-run.js',
   './lib/supported-plan.js',
+  './lib/find.js',
   './pdf/layout.js',
   './fixtures/sample-140.csv',
   './fixtures/messy.csv',
