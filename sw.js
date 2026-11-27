@@ -1,4 +1,4 @@
-const CACHE_NAME = 'almsy-desk-v12';
+const CACHE_NAME = 'almsy-desk-v13'; // v13 = 2026-11-26 SheetJS 0.18.5 -> 0.20.3 (security advisories)
 
 const APP_SHELL_ASSETS = [
   './',

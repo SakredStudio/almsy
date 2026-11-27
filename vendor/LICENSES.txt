@@ -12,7 +12,7 @@ THIRD-PARTY VENDORED LIBRARIES (OFFLINE RUNTIME)
    License: MIT
    Copyright (c) 2020 Arjun Barrett
 
-4. SheetJS Community Edition xlsx v0.18.5 (vendor/xlsx.mjs)
+4. SheetJS Community Edition xlsx v0.20.3 (vendor/xlsx.mjs)
    License: Apache License 2.0
    Copyright (c) 2012-present SheetJS LLC
 
